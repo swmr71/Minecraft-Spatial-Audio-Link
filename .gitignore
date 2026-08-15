@@ -1,0 +1,7 @@
+.env
+*/livekit.yaml
+db.sqlite3
+__pycache__/
+*.pyc
+venv/
+.vscode/

@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VC Spatial Dashboard - clusters-prj</title>
+    <!-- Livekit Client SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .card {
+            background: #1e1e1e;
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 600px;
+            text-align: center;
+            border: 1px solid #333;
+        }
+        h1 { color: #ffffff; margin-bottom: 0.5rem; }
+        
+        .radar-container {
+            position: relative;
+            width: 300px;
+            height: 300px;
+            margin: 1.5rem auto;
+            background: radial-gradient(circle, #1a2a1a 0%, #000 100%);
+            border: 2px solid #00ff0033;
+            border-radius: 50%;
+            overflow: hidden;
+        }
+        #radar-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        .audio-monitors {
+            display: flex;
+            justify-content: space-around;
+            margin: 1rem 0;
+            background: #111;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        .gauge-wrapper { width: 45%; text-align: left; }
+        .gauge-label { font-size: 0.7rem; color: #888; margin-bottom: 4px; }
+        .gauge-bar-bg {
+            width: 100%;
+            height: 10px;
+            background: #222;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .gauge-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #00d2d3, #0984e3);
+            transition: width 0.1s;
+        }
+
+        .user-badge {
+            display: inline-block;
+            background: #2d3436;
+            padding: 5px 15px;
+            border-radius: 20px;
+            color: #00d2d3;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+        }
+        
+        #my-coords {
+            font-family: monospace;
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+            color: #aaa;
+        }
+        .coord-val { color: #fff; font-weight: bold; }
+
+        #status-indicator {
+            margin-bottom: 1rem;
+            padding: 8px;
+            border-radius: 5px;
+            background: #252525;
+            font-size: 0.8rem;
+        }
+
+        /* ボタンエリアのスタイル */
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .btn {
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            width: 100%;
+            transition: opacity 0.2s;
+        }
+        .btn:disabled { background-color: #555; cursor: not-allowed; }
+        .btn-connect { background-color: #0984e3; color: white; }
+        .btn-mute { background-color: #636e72; color: white; }
+        .btn-mute.active { background-color: #d63031; }
+        .btn-leave { background-color: #2d3436; color: #fab1a0; border: 1px solid #d6303122; }
+
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h1>Spatial VC</h1>
+    <div class="user-badge">User: {{ mc_name }}</div>
+    
+    <div id="my-coords">
+        Coords: 
+        X: <span id="pos-x" class="coord-val">---</span>, 
+        Y: <span id="pos-y" class="coord-val">---</span>, 
+        Z: <span id="pos-z" class="coord-val">---</span>
+    </div>
+
+    <div class="radar-container">
+        <canvas id="radar-canvas" width="300" height="300"></canvas>
+    </div>
+
+    <div class="audio-monitors">
+        <div class="gauge-wrapper">
+            <div class="gauge-label">LEFT</div>
+            <div class="gauge-bar-bg"><div id="gauge-l" class="gauge-fill"></div></div>
+        </div>
+        <div class="gauge-wrapper">
+            <div class="gauge-label">RIGHT</div>
+            <div class="gauge-bar-bg"><div id="gauge-r" class="gauge-fill"></div></div>
+        </div>
+    </div>
+    
+    <div id="status-indicator">状態: 準備完了</div>
+
+    <div class="controls">
+        <button id="connect-btn" class="btn btn-connect">ボイスチャットに接続</button>
+        
+        <div id="active-controls" class="hidden" style="display: flex; gap: 10px;">
+            <button id="mute-btn" class="btn btn-mute">マイクをミュート</button>
+            <button id="leave-btn" class="btn btn-leave">退出</button>
+        </div>
+    </div>
+
+    <div id="audio-container" style="display:none;"></div>
+</div>
+
+<script>
+    // --- 初期設定 ---
+    const MY_UUID = "{{ uuid }}";
+    const CONNECT_BTN = document.getElementById('connect-btn');
+    const MUTE_BTN = document.getElementById('mute-btn');
+    const LEAVE_BTN = document.getElementById('leave-btn');
+    const ACTIVE_CONTROLS = document.getElementById('active-controls');
+    const STATUS = document.getElementById('status-indicator');
+    const RADAR_CANVAS = document.getElementById('radar-canvas');
+    const RADAR_CTX = RADAR_CANVAS.getContext('2d');
+    
+    const COORDS_X = document.getElementById('pos-x');
+    const COORDS_Y = document.getElementById('pos-y');
+    const COORDS_Z = document.getElementById('pos-z');
+
+    let currentRoom = null;
+    let spatialWS = null;
+    let isMicMuted = false;
+    let animationFrameId = null;
+
+    // Web Audio API Setup
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const panners = {}; 
+    const masterGain = audioCtx.createGain();
+    const analyserMaster = audioCtx.createAnalyser();
+    const analyserL = audioCtx.createAnalyser();
+    const analyserR = audioCtx.createAnalyser();
+
+    analyserMaster.fftSize = 256;
+    analyserL.fftSize = 256;
+    analyserR.fftSize = 256;
+    
+    masterGain.connect(analyserMaster);
+    analyserMaster.connect(audioCtx.destination);
+    
+    const splitter = audioCtx.createChannelSplitter(2);
+    analyserMaster.connect(splitter);
+    splitter.connect(analyserL, 0);
+    splitter.connect(analyserR, 1);
+
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+    function setupSpatialTrack(track, participantIdentity) {
+        const stream = new MediaStream([track.mediaStreamTrack]);
+        const source = audioCtx.createMediaStreamSource(stream);
+        
+        const panner = audioCtx.createPanner();
+        panner.panningModel = 'HRTF';
+        panner.distanceModel = 'inverse';
+        panner.refDistance = 1;
+        panner.maxDistance = 200; 
+        panner.rolloffFactor = 1;
+
+        source.connect(panner).connect(masterGain);
+        panners[participantIdentity] = panner;
+
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+
+    // --- レーダー描画 (自分が中心で上が向いている方向) ---
+    let lastPlayers = [];
+    function drawRadarAndCoords() {
+        const center = 150;
+        const scale = 150 / 200; 
+        
+        RADAR_CTX.clearRect(0, 0, 300, 300);
+
+        const me = lastPlayers.find(p => p.u === MY_UUID);
+        
+        if (me) {
+            COORDS_X.innerText = me.p[0].toFixed(1);
+            COORDS_Y.innerText = me.p[1].toFixed(1);
+            COORDS_Z.innerText = me.p[2].toFixed(1);
+        }
+
+        // 描画状態を保存
+        RADAR_CTX.save();
+        
+        // 中心をCanvasの中央に移動
+        RADAR_CTX.translate(center, center);
+
+        // 自分の向き(yaw)に応じてレーダー全体を回転させる
+        // Minecraftのyawは度が単位。0が南、90が西、180が北、270が東。
+        // 上を向いている方向にするには、-yaw 度回転させる（ラジアン変換が必要）
+        if (me) {
+            const myYawRad = (me.y * Math.PI) / 180;
+            // Minecraftの座標系に合わせて回転(北を基準にする調整含む)
+            RADAR_CTX.rotate(-myYawRad - Math.PI); 
+        }
+
+        // --- 回転した座標系での描画 ---
+
+        // 背景の同心円
+        RADAR_CTX.strokeStyle = "#00ff0022";
+        [50, 100, 150, 200].forEach(r => {
+            RADAR_CTX.beginPath();
+            RADAR_CTX.arc(0, 0, r * scale, 0, Math.PI * 2);
+            RADAR_CTX.stroke();
+        });
+
+        // プレイヤー描画
+        lastPlayers.forEach(p => {
+            if (!me) return;
+            // 相対座標 (世界座標系)
+            const relX = p.p[0] - me.p[0];
+            const relZ = p.p[2] - me.p[2];
+
+            const dist = Math.sqrt(relX*relX + relZ*relZ);
+            if (dist > 200) return;
+
+            // 描画位置 (Canvasの回転がかかっているので、そのまま世界座標の相対値でOK)
+            const drawX = relX * scale;
+            const drawY = relZ * scale;
+
+            RADAR_CTX.fillStyle = (p.u === MY_UUID) ? "#00d2d3" : "#ff7675";
+            RADAR_CTX.beginPath();
+            RADAR_CTX.arc(drawX, drawY, 4, 0, Math.PI * 2);
+            RADAR_CTX.fill();
+            
+            // テキストが回転しないように個別に制御したい場合は再度逆回転が必要だが、
+            // 今回はシンプルにプレイヤー名もそのまま描画
+            RADAR_CTX.fillStyle = "#fff";
+            RADAR_CTX.font = "10px sans-serif";
+            RADAR_CTX.fillText(p.n, drawX + 6, drawY + 4);
+        });
+
+        RADAR_CTX.restore(); // 座標系を戻す
+
+        // 自分の向きの固定ガイド（常に上を指す）
+        RADAR_CTX.beginPath();
+        RADAR_CTX.moveTo(center, center);
+        RADAR_CTX.lineTo(center, center - 30);
+        RADAR_CTX.strokeStyle = "#00d2d3";
+        RADAR_CTX.lineWidth = 2;
+        RADAR_CTX.stroke();
+
+        animationFrameId = requestAnimationFrame(drawRadarAndCoords);
+    }
+
+    function updateGauges() {
+        const dataL = new Uint8Array(analyserL.frequencyBinCount);
+        const dataR = new Uint8Array(analyserR.frequencyBinCount);
+        const dataMaster = new Uint8Array(analyserMaster.frequencyBinCount);
+        
+        analyserL.getByteFrequencyData(dataL);
+        analyserR.getByteFrequencyData(dataR);
+        analyserMaster.getByteFrequencyData(dataMaster);
+        
+        const maxL = Math.max(...dataL);
+        const maxR = Math.max(...dataR);
+        const maxMaster = Math.max(...dataMaster);
+
+        const displayL = maxL > 0 ? maxL : maxMaster;
+        const displayR = maxR > 0 ? maxR : maxMaster;
+
+        document.getElementById('gauge-l').style.width = (displayL / 255 * 100) + "%";
+        document.getElementById('gauge-r').style.width = (displayR / 255 * 100) + "%";
+
+        requestAnimationFrame(updateGauges);
+    }
+
+    function connectSpatialWS() {
+        const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
+        spatialWS = new WebSocket(`${wsScheme}://${window.location.host}/ws/vchat/spatial/`);
+
+        spatialWS.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            if (data.t === "pos") {
+                lastPlayers = data.d;
+                updateAudioPositions(data.d);
+            }
+        };
+
+        spatialWS.onclose = () => console.log("[WS] Closed");
+    }
+
+    function updateAudioPositions(players) {
+        const listener = audioCtx.listener;
+        const now = audioCtx.currentTime;
+
+        players.forEach(p => {
+            const [x, y, z] = p.p;
+            if (p.u === MY_UUID) {
+                listener.positionX.setTargetAtTime(x, now, 0.1);
+                listener.positionY.setTargetAtTime(y, now, 0.1);
+                listener.positionZ.setTargetAtTime(z, now, 0.1);
+                
+                const rad = (p.y * Math.PI) / 180;
+                listener.forwardX.setTargetAtTime(-Math.sin(rad), now, 0.1);
+                listener.forwardZ.setTargetAtTime(Math.cos(rad), now, 0.1);
+            } else if (panners[p.u]) {
+                const panner = panners[p.u];
+                panner.positionX.setTargetAtTime(x, now, 0.1);
+                panner.positionY.setTargetAtTime(y, now, 0.1);
+                panner.positionZ.setTargetAtTime(z, now, 0.1);
+            }
+        });
+    }
+
+    // --- 各種アクション ---
+
+    // 接続
+    CONNECT_BTN.addEventListener('click', async () => {
+        CONNECT_BTN.disabled = true;
+        STATUS.innerText = "状態: 接続中...";
+
+        try {
+            const response = await fetch('/api/vc/livekit/token/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') }
+            });
+
+            const data = await response.json();
+            currentRoom = new LivekitClient.Room({ adaptiveStream: true });
+            
+            await currentRoom.connect('wss://livekit.clusters-prj.com', data.token);
+            await currentRoom.localParticipant.setMicrophoneEnabled(true);
+
+            currentRoom.on('trackSubscribed', (track, pub, participant) => {
+                if (track.kind === 'audio') {
+                    const element = track.attach();
+                    (document.getElementById('audio-container') || document.body).appendChild(element);
+                    setupSpatialTrack(track, participant.identity);
+                }
+            });
+
+            STATUS.innerText = "状態: 接続成功（立体音響有効）";
+            CONNECT_BTN.classList.add('hidden');
+            ACTIVE_CONTROLS.classList.remove('hidden');
+            ACTIVE_CONTROLS.style.display = "flex";
+
+            connectSpatialWS();
+            drawRadarAndCoords();
+            updateGauges();
+
+        } catch (e) {
+            console.error(e);
+            STATUS.innerText = "エラー: " + e.message;
+            CONNECT_BTN.disabled = false;
+        }
+    });
+
+    // ミュート切り替え
+    MUTE_BTN.addEventListener('click', async () => {
+        if (!currentRoom) return;
+        isMicMuted = !isMicMuted;
+        
+        await currentRoom.localParticipant.setMicrophoneEnabled(!isMicMuted);
+        
+        if (isMicMuted) {
+            MUTE_BTN.innerText = "マイクを解除";
+            MUTE_BTN.classList.add('active');
+            STATUS.innerText = "状態: ミュート中";
+        } else {
+            MUTE_BTN.innerText = "マイクをミュート";
+            MUTE_BTN.classList.remove('active');
+            STATUS.innerText = "状態: 接続中";
+        }
+    });
+
+    // 退出
+    LEAVE_BTN.addEventListener('click', async () => {
+        if (currentRoom) {
+            await currentRoom.disconnect();
+            currentRoom = null;
+        }
+        if (spatialWS) {
+            spatialWS.close();
+            spatialWS = null;
+        }
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+        }
+
+        STATUS.innerText = "状態: 退出しました";
+        ACTIVE_CONTROLS.classList.add('hidden');
+        ACTIVE_CONTROLS.style.display = "none";
+        CONNECT_BTN.classList.remove('hidden');
+        CONNECT_BTN.disabled = false;
+        
+        // 座標・レーダークリア
+        COORDS_X.innerText = "---";
+        COORDS_Y.innerText = "---";
+        COORDS_Z.innerText = "---";
+        RADAR_CTX.clearRect(0, 0, 300, 300);
+        lastPlayers = [];
+    });
+</script>
+
+</body>
+</html>

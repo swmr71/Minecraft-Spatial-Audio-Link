@@ -1,0 +1,26 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Minecraft Login</title>
+    <style>
+        body { background: #000; color: #DEFF9A; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: #111; padding: 40px; border-radius: 20px; border: 1px solid #DEFF9A; width: 350px; text-align: center; }
+        input { width: 100%; padding: 12px; margin: 10px 0; background: #222; border: 1px solid #333; color: #fff; border-radius: 8px; }
+        button { width: 100%; padding: 15px; background: #DEFF9A; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        .error { color: #ff5555; font-size: 14px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Minecraft Login</h2>
+        <form method="POST">
+            {% csrf_token %}
+            <input type="text" name="mc_name" placeholder="Minecraft ID" required>
+            <input type="text" name="code" placeholder="6-digit code" maxlength="6" required>
+            <button type="submit">LOGIN</button>
+        </form>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    </div>
+</body>
+</html>

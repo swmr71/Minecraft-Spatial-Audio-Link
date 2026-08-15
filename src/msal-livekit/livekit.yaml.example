@@ -1,0 +1,9 @@
+port: 7880
+
+rtc:
+  udp_port: 7882
+  use_external_ip: false
+  node_ip: "YOUR_SERVER_IP"
+
+keys:
+  devkey: "YOUR_LIVEKIT_API_SECRET"
