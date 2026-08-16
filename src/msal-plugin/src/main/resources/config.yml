@@ -1,0 +1,16 @@
+redis:
+  host: 127.0.0.1
+  port: 6379
+  password: ""
+  database: 0
+
+backend:
+  # msal-node のベースURL（例: http://10.2.1.5:8010）
+  base-url: "http://127.0.0.1:8010"
+  login-url: "https://vc.clusters-prj.com/login/"
+
+broadcast:
+  # 座標送信間隔（tick、20 tick = 1秒）
+  interval-ticks: 5
+  # Redis 上のキーTTL（秒）
+  ttl-seconds: 5
