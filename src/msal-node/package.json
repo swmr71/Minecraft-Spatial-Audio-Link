@@ -1,0 +1,27 @@
+{
+  "name": "msal-node",
+  "version": "1.0.0",
+  "description": "Minecraft Spatial Audio Link - backend (login/token API + spatial VC websocket)",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "connect-redis": "^7.1.1",
+    "cookie": "^0.6.0",
+    "cookie-signature": "^1.2.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "livekit-server-sdk": "^2.7.2",
+    "redis": "^4.7.0",
+    "uuid": "^9.0.1",
+    "ws": "^8.18.0"
+  }
+}

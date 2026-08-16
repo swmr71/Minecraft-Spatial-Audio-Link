@@ -28,7 +28,7 @@
             border: 1px solid #333;
         }
         h1 { color: #ffffff; margin-bottom: 0.5rem; }
-        
+
         .radar-container {
             position: relative;
             width: 300px;
@@ -78,7 +78,7 @@
             font-weight: bold;
             margin-bottom: 0.5rem;
         }
-        
+
         #my-coords {
             font-family: monospace;
             font-size: 0.8rem;
@@ -95,7 +95,6 @@
             font-size: 0.8rem;
         }
 
-        /* ボタンエリアのスタイル */
         .controls {
             display: flex;
             flex-direction: column;
@@ -123,12 +122,12 @@
 
 <div class="card">
     <h1>Spatial VC</h1>
-    <div class="user-badge">User: {{ mc_name }}</div>
-    
+    <div class="user-badge">User: {{mc_name}}</div>
+
     <div id="my-coords">
-        Coords: 
-        X: <span id="pos-x" class="coord-val">---</span>, 
-        Y: <span id="pos-y" class="coord-val">---</span>, 
+        Coords:
+        X: <span id="pos-x" class="coord-val">---</span>,
+        Y: <span id="pos-y" class="coord-val">---</span>,
         Z: <span id="pos-z" class="coord-val">---</span>
     </div>
 
@@ -146,12 +145,12 @@
             <div class="gauge-bar-bg"><div id="gauge-r" class="gauge-fill"></div></div>
         </div>
     </div>
-    
+
     <div id="status-indicator">状態: 準備完了</div>
 
     <div class="controls">
         <button id="connect-btn" class="btn btn-connect">ボイスチャットに接続</button>
-        
+
         <div id="active-controls" class="hidden" style="display: flex; gap: 10px;">
             <button id="mute-btn" class="btn btn-mute">マイクをミュート</button>
             <button id="leave-btn" class="btn btn-leave">退出</button>
@@ -163,7 +162,8 @@
 
 <script>
     // --- 初期設定 ---
-    const MY_UUID = "{{ uuid }}";
+    const MY_UUID = "{{uuid}}";
+    const LIVEKIT_WS_URL = "{{livekit_ws_url}}";
     const CONNECT_BTN = document.getElementById('connect-btn');
     const MUTE_BTN = document.getElementById('mute-btn');
     const LEAVE_BTN = document.getElementById('leave-btn');
@@ -171,7 +171,7 @@
     const STATUS = document.getElementById('status-indicator');
     const RADAR_CANVAS = document.getElementById('radar-canvas');
     const RADAR_CTX = RADAR_CANVAS.getContext('2d');
-    
+
     const COORDS_X = document.getElementById('pos-x');
     const COORDS_Y = document.getElementById('pos-y');
     const COORDS_Z = document.getElementById('pos-z');
@@ -183,7 +183,7 @@
 
     // Web Audio API Setup
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const panners = {}; 
+    const panners = {};
     const masterGain = audioCtx.createGain();
     const analyserMaster = audioCtx.createAnalyser();
     const analyserL = audioCtx.createAnalyser();
@@ -192,39 +192,24 @@
     analyserMaster.fftSize = 256;
     analyserL.fftSize = 256;
     analyserR.fftSize = 256;
-    
+
     masterGain.connect(analyserMaster);
     analyserMaster.connect(audioCtx.destination);
-    
+
     const splitter = audioCtx.createChannelSplitter(2);
     analyserMaster.connect(splitter);
     splitter.connect(analyserL, 0);
     splitter.connect(analyserR, 1);
 
-    function getCookie(name) {
-        let cookieValue = null;
-        if (document.cookie && document.cookie !== '') {
-            const cookies = document.cookie.split(';');
-            for (let i = 0; i < cookies.length; i++) {
-                const cookie = cookies[i].trim();
-                if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                    break;
-                }
-            }
-        }
-        return cookieValue;
-    }
-
     function setupSpatialTrack(track, participantIdentity) {
         const stream = new MediaStream([track.mediaStreamTrack]);
         const source = audioCtx.createMediaStreamSource(stream);
-        
+
         const panner = audioCtx.createPanner();
         panner.panningModel = 'HRTF';
         panner.distanceModel = 'inverse';
         panner.refDistance = 1;
-        panner.maxDistance = 200; 
+        panner.maxDistance = 200;
         panner.rolloffFactor = 1;
 
         source.connect(panner).connect(masterGain);
@@ -237,36 +222,26 @@
     let lastPlayers = [];
     function drawRadarAndCoords() {
         const center = 150;
-        const scale = 150 / 200; 
-        
+        const scale = 150 / 200;
+
         RADAR_CTX.clearRect(0, 0, 300, 300);
 
         const me = lastPlayers.find(p => p.u === MY_UUID);
-        
+
         if (me) {
             COORDS_X.innerText = me.p[0].toFixed(1);
             COORDS_Y.innerText = me.p[1].toFixed(1);
             COORDS_Z.innerText = me.p[2].toFixed(1);
         }
 
-        // 描画状態を保存
         RADAR_CTX.save();
-        
-        // 中心をCanvasの中央に移動
         RADAR_CTX.translate(center, center);
 
-        // 自分の向き(yaw)に応じてレーダー全体を回転させる
-        // Minecraftのyawは度が単位。0が南、90が西、180が北、270が東。
-        // 上を向いている方向にするには、-yaw 度回転させる（ラジアン変換が必要）
         if (me) {
             const myYawRad = (me.y * Math.PI) / 180;
-            // Minecraftの座標系に合わせて回転(北を基準にする調整含む)
-            RADAR_CTX.rotate(-myYawRad - Math.PI); 
+            RADAR_CTX.rotate(-myYawRad - Math.PI);
         }
 
-        // --- 回転した座標系での描画 ---
-
-        // 背景の同心円
         RADAR_CTX.strokeStyle = "#00ff0022";
         [50, 100, 150, 200].forEach(r => {
             RADAR_CTX.beginPath();
@@ -274,17 +249,14 @@
             RADAR_CTX.stroke();
         });
 
-        // プレイヤー描画
         lastPlayers.forEach(p => {
             if (!me) return;
-            // 相対座標 (世界座標系)
             const relX = p.p[0] - me.p[0];
             const relZ = p.p[2] - me.p[2];
 
             const dist = Math.sqrt(relX*relX + relZ*relZ);
             if (dist > 200) return;
 
-            // 描画位置 (Canvasの回転がかかっているので、そのまま世界座標の相対値でOK)
             const drawX = relX * scale;
             const drawY = relZ * scale;
 
@@ -292,17 +264,14 @@
             RADAR_CTX.beginPath();
             RADAR_CTX.arc(drawX, drawY, 4, 0, Math.PI * 2);
             RADAR_CTX.fill();
-            
-            // テキストが回転しないように個別に制御したい場合は再度逆回転が必要だが、
-            // 今回はシンプルにプレイヤー名もそのまま描画
+
             RADAR_CTX.fillStyle = "#fff";
             RADAR_CTX.font = "10px sans-serif";
             RADAR_CTX.fillText(p.n, drawX + 6, drawY + 4);
         });
 
-        RADAR_CTX.restore(); // 座標系を戻す
+        RADAR_CTX.restore();
 
-        // 自分の向きの固定ガイド（常に上を指す）
         RADAR_CTX.beginPath();
         RADAR_CTX.moveTo(center, center);
         RADAR_CTX.lineTo(center, center - 30);
@@ -317,11 +286,11 @@
         const dataL = new Uint8Array(analyserL.frequencyBinCount);
         const dataR = new Uint8Array(analyserR.frequencyBinCount);
         const dataMaster = new Uint8Array(analyserMaster.frequencyBinCount);
-        
+
         analyserL.getByteFrequencyData(dataL);
         analyserR.getByteFrequencyData(dataR);
         analyserMaster.getByteFrequencyData(dataMaster);
-        
+
         const maxL = Math.max(...dataL);
         const maxR = Math.max(...dataR);
         const maxMaster = Math.max(...dataMaster);
@@ -360,7 +329,7 @@
                 listener.positionX.setTargetAtTime(x, now, 0.1);
                 listener.positionY.setTargetAtTime(y, now, 0.1);
                 listener.positionZ.setTargetAtTime(z, now, 0.1);
-                
+
                 const rad = (p.y * Math.PI) / 180;
                 listener.forwardX.setTargetAtTime(-Math.sin(rad), now, 0.1);
                 listener.forwardZ.setTargetAtTime(Math.cos(rad), now, 0.1);
@@ -383,13 +352,13 @@
         try {
             const response = await fetch('/api/vc/livekit/token/', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') }
+                headers: { 'Content-Type': 'application/json' },
             });
 
             const data = await response.json();
             currentRoom = new LivekitClient.Room({ adaptiveStream: true });
-            
-            await currentRoom.connect('wss://livekit.clusters-prj.com', data.token);
+
+            await currentRoom.connect(LIVEKIT_WS_URL, data.token);
             await currentRoom.localParticipant.setMicrophoneEnabled(true);
 
             currentRoom.on('trackSubscribed', (track, pub, participant) => {
@@ -420,9 +389,9 @@
     MUTE_BTN.addEventListener('click', async () => {
         if (!currentRoom) return;
         isMicMuted = !isMicMuted;
-        
+
         await currentRoom.localParticipant.setMicrophoneEnabled(!isMicMuted);
-        
+
         if (isMicMuted) {
             MUTE_BTN.innerText = "マイクを解除";
             MUTE_BTN.classList.add('active');
@@ -453,8 +422,7 @@
         ACTIVE_CONTROLS.style.display = "none";
         CONNECT_BTN.classList.remove('hidden');
         CONNECT_BTN.disabled = false;
-        
-        // 座標・レーダークリア
+
         COORDS_X.innerText = "---";
         COORDS_Y.innerText = "---";
         COORDS_Z.innerText = "---";
