@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
-const { tokenStore, loginLimiter } = require('../services');
+const { tokenStore, loginLimiter, isSuperAdmin } = require('../services');
 const { isMcName, isLoginCode, escapeHtml } = require('../validation');
 
 const router = express.Router();
@@ -87,6 +87,7 @@ router.get('/dashboard/', (req, res) => {
     mc_name: mcName,
     uuid,
     livekit_ws_url: config.livekit.wsUrl,
+    role: isSuperAdmin(uuid) ? 'super' : 'user',
   }));
 });
 

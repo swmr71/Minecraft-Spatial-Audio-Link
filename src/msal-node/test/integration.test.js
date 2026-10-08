@@ -47,6 +47,7 @@ test('backend 通しテスト（認証・ワンタイム・総当たり対策・
       ...process.env, PORT: String(port), SESSION_SECRET: 's'.repeat(32), PLUGIN_API_KEY: KEY,
       REDIS_URL, LIVEKIT_API_KEY: 'devkey', LIVEKIT_API_SECRET: 'x'.repeat(40),
       LIVEKIT_WS_URL: 'wss://lk.example', DB_PATH: ':memory:', TRUST_PROXY: '0',
+      SUPER_ADMIN_UUIDS: UUID_A,
     },
   });
 
@@ -99,15 +100,6 @@ test('backend 通しテスト（認証・ワンタイム・総当たり対策・
       assert.ok(html.includes('data-uuid="' + UUID_A + '"'));
     });
 
-    await t.test('連続失敗で 429（コードも失効）', async () => {
-      const code = await issue(UUID_B, 'Bob');
-      const wrong = code === '999999' ? '999998' : '999999';
-      let last;
-      for (let i = 0; i < 6; i++) last = await login('Bob', wrong);
-      assert.equal(last.status, 429);
-      assert.equal((await login('Bob', code)).status, 429);
-    });
-
     await t.test('WebSocket: Origin 不正・未認証は拒否、認証済みは pos/sub を差分配信', async () => {
       const url = `ws://127.0.0.1:${port}/ws/vchat/spatial/`;
       const origin = `http://127.0.0.1:${port}`;
@@ -148,12 +140,130 @@ test('backend 通しテスト（認証・ワンタイム・総当たり対策・
       ws.close();
     });
 
+    await t.test('RBAC: 管理 API は Super Admin のみ / プラグイン API は共有シークレット必須', async () => {
+      // Bob（一般）としてログイン
+      const code = await issue(UUID_B, 'Bobby');
+      const bobCookie = (await login('Bobby', code)).headers.get('set-cookie').split(';')[0];
+
+      assert.equal((await fetch(`${base}/api/vc/admin/state`)).status, 401);
+      assert.equal((await fetch(`${base}/api/vc/admin/state`, { headers: { cookie: bobCookie } })).status, 403);
+      assert.equal((await post('/api/vc/admin/broadcast/start', { message: 'x' }, { cookie: bobCookie })).status, 403);
+      assert.equal((await post('/api/vc/admin/settings', { duck: 10 }, { cookie: bobCookie })).status, 403);
+      assert.equal((await fetch(`${base}/api/vc/admin/state`, { headers: { cookie } })).status, 200);
+
+      assert.equal((await post('/api/vc/plugin/broadcast/start', { uuid: UUID_B, mc_name: 'Bobby' })).status, 401);
+      assert.equal((await post('/api/vc/plugin/channel/mute', { channel: 3, muted: true })).status, 401);
+
+      const dash = await (await fetch(`${base}/dashboard/`, { headers: { cookie } })).text();
+      assert.ok(dash.includes('data-role="super"'));
+      const bobDash = await (await fetch(`${base}/dashboard/`, { headers: { cookie: bobCookie } })).text();
+      assert.ok(bobDash.includes('data-role="user"'));
+    });
+
+    await t.test('入力検証: 設定値・チャンネル・Content-Type', async () => {
+      assert.equal((await post('/api/vc/admin/settings', { duck: 101 }, { cookie })).status, 400);
+      assert.equal((await post('/api/vc/admin/settings', { duck: 'x' }, { cookie })).status, 400);
+      assert.equal((await post('/api/vc/admin/channel/mute', { channel: 0, muted: true }, { cookie })).status, 400);
+      assert.equal((await post('/api/vc/admin/channel/mute', { channel: 5, muted: 'yes' }, { cookie })).status, 400);
+      const form = await fetch(`${base}/api/vc/admin/settings`, {
+        method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: 'duck=10',
+      });
+      assert.equal(form.status, 415);
+    });
+
+    await t.test('放送・ダッキング・ミュート・傍受が WebSocket に反映される', async () => {
+      const url = `ws://127.0.0.1:${port}/ws/vchat/spatial/`;
+      const origin = `http://127.0.0.1:${port}`;
+      const put = (u, n, p, w, c) => redis.setEx(`vchat:player:${u}`, 20, JSON.stringify({ u, n, p, y: 0, w, c }));
+      const UUID_C = '00000000-0000-0000-0000-0000000000cc';
+      const UUID_D = '00000000-0000-0000-0000-0000000000dd';
+      // Alice(super): world ch0 / Carol: 遠方 ch8 / Dave: 遠方 ch8
+      await put(UUID_A, 'Alice', [0, 64, 0], 'world', 0);
+      await put(UUID_C, 'Carol', [900, 64, 0], 'world', 8);
+      await put(UUID_D, 'Dave', [950, 64, 0], 'world', 8);
+
+      const ws = new WebSocket(url, { headers: { cookie, origin } });
+      const msgs = [];
+      ws.on('message', (m) => msgs.push(JSON.parse(m)));
+      const lastPos = () => [...msgs].reverse().find((m) => m.t === 'pos');
+      const lastBc = () => [...msgs].reverse().find((m) => m.t === 'bc');
+      const kinds = () => Object.fromEntries(lastPos().d.map((p) => [p.n, p.k]));
+
+      await sleep(700);
+      assert.deepEqual(lastBc(), { t: 'bc', d: [], duck: 30 }, '接続直後に既定のダッキング量が届く');
+      assert.deepEqual(kinds(), { Alice: 'self' });
+
+      // プラグインから Carol の放送開始 → Alice に global
+      assert.equal((await post('/api/vc/plugin/broadcast/start', { uuid: UUID_C, mc_name: 'Carol', message: 'メンテ' }, { 'x-msal-key': KEY })).status, 200);
+      await sleep(700);
+      assert.equal(kinds().Carol, 'global');
+      assert.deepEqual(lastBc().d.map((b) => [b.n, b.msg]), [['Carol', 'メンテ']]);
+
+      // ダッキング量変更
+      assert.equal((await post('/api/vc/admin/settings', { duck: 12 }, { cookie })).status, 200);
+      await sleep(700);
+      assert.equal(lastBc().duck, 12);
+
+      // 放送停止（uuid 無し = 全停止）
+      assert.equal((await post('/api/vc/plugin/broadcast/stop', {}, { 'x-msal-key': KEY })).status, 200);
+      await sleep(700);
+      assert.equal(kinds().Carol, undefined);
+      assert.deepEqual(lastBc().d, []);
+
+      // 傍受: 全チャンネル → Carol/Dave が radio(ng=0)。チャンネル指定・解除も反映
+      ws.send(JSON.stringify({ t: 'eavesdrop', ch: 'all' }));
+      await sleep(700);
+      assert.deepEqual([kinds().Carol, kinds().Dave], ['radio', 'radio']);
+      assert.equal(lastPos().d.find((p) => p.n === 'Carol').ng, 0);
+      ws.send(JSON.stringify({ t: 'eavesdrop', ch: 99 }));
+      await sleep(700);
+      assert.deepEqual(kinds(), { Alice: 'self' });
+      ws.send(JSON.stringify({ t: 'eavesdrop', ch: null }));
+
+      // ミュート: 一般ユーザー Bobby が ch8 で聞いている状態で ch8 をミュート → 聞こえなくなる
+      await put(UUID_B, 'Bobby', [0, 64, 0], 'world', 8);
+      const bobCode = await issue(UUID_B, 'Bobby');
+      const bobCookie = (await login('Bobby', bobCode)).headers.get('set-cookie').split(';')[0];
+      const bws = new WebSocket(url, { headers: { cookie: bobCookie, origin } });
+      const bmsgs = [];
+      bws.on('message', (m) => bmsgs.push(JSON.parse(m)));
+      const bKinds = () => Object.fromEntries([...bmsgs].reverse().find((m) => m.t === 'pos').d.map((p) => [p.n, p.k]));
+      await sleep(700);
+      assert.equal(bKinds().Carol, 'radio');
+      // 一般ユーザーが傍受を要求しても無視される
+      bws.send(JSON.stringify({ t: 'eavesdrop', ch: 'all' }));
+
+      assert.equal((await post('/api/vc/plugin/channel/mute', { channel: 8, muted: true }, { 'x-msal-key': KEY })).status, 200);
+      await sleep(700);
+      assert.equal(bKinds().Carol, undefined);
+      const st = await (await fetch(`${base}/api/vc/admin/state`, { headers: { cookie } })).json();
+      assert.deepEqual(st.muted, [8]);
+      assert.ok(st.players.some((p) => p.n === 'Carol'));
+
+      assert.equal((await post('/api/vc/admin/channel/mute', { channel: 8, muted: false }, { cookie })).status, 200);
+      await sleep(700);
+      assert.equal(bKinds().Carol, 'radio');
+
+      ws.close();
+      bws.close();
+    });
+
     await t.test('認証中に切断してもサーバーは落ちない', async () => {
       const q = new WebSocket(`ws://127.0.0.1:${port}/ws/vchat/spatial/`, { headers: { cookie, origin: `http://127.0.0.1:${port}` } });
       q.on('open', () => q.terminate());
       q.on('error', () => {});
       await sleep(300);
       assert.equal((await fetch(`${base}/healthz`)).ok, true);
+    });
+
+    // IP 単位の失敗制限に達するため、ログインを使う他のテストの後に置く
+    await t.test('連続失敗で 429（コードも失効）', async () => {
+      const code = await issue(UUID_B, 'Bob');
+      const wrong = code === '999999' ? '999998' : '999999';
+      let last;
+      for (let i = 0; i < 6; i++) last = await login('Bob', wrong);
+      assert.equal(last.status, 429);
+      assert.equal((await login('Bob', code)).status, 429);
     });
   } finally {
     server.kill('SIGTERM');

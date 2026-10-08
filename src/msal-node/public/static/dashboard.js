@@ -2,11 +2,15 @@
  * - LiveKit は autoSubscribe:false。サーバーから届く購読リスト(sub)の相手だけ購読する（要件定義 §4.2）
  * - 近接: HRTF + 50m で無音になる距離減衰 + 距離に応じた高域カット（仕様書 §3.1）
  * - ラジオ: バンドパス + 距離に応じたノイズ混入（要件定義 §3.3 / §5.2）、定位なし
+ * - 全体放送: 距離・方向・ノイズなしでステレオ中央。放送中は他の音量をダッキング（§3.2）
+ * - 演出: スニーク中は小声、水中は「ボコボコ」フィルタ、地下深くは残響（プラグイン仕様 §4）
+ * - VAD: 接続時 3 秒の静寂測定 → 背景ノイズ + 5dB をしきい値に送信ゲート（§3.3 / vad.js）
  */
 (() => {
   'use strict';
 
-  const { uuid: MY_UUID, livekitUrl: LIVEKIT_WS_URL } = document.body.dataset;
+  const { uuid: MY_UUID, livekitUrl: LIVEKIT_WS_URL, role: ROLE } = document.body.dataset;
+  const VAD = window.MSALVad;
 
   const PROX_AUDIBLE = 50;        // m。これを超えると無音
   const RADAR_RANGE = 100;        // m。購読範囲と同じ
@@ -15,6 +19,13 @@
   const RADIO_NOISE_SHARE = 0.9;  // ノイズ最大時（2km）にノイズが占める割合
   const RADIO_NOISE_LEVEL = 0.3;  // ノイズ全体の音量
   const GAIN_SMOOTHING = 0.08;    // 秒（setTargetAtTime の時定数）
+  const SNEAK_GAIN = 0.6;         // スニーク中の声の大きさ
+  const WATER_LOWPASS_HZ = 700;   // 水中: こもらせる
+  const WATER_TREMOLO_HZ = 7;     // 水中: ボコボコ感（振幅変調）
+  const WATER_TREMOLO_DEPTH = 0.4;
+  const DEEP_Y = 0;               // この高さ以下を「地下深く」とみなす
+  const REVERB_WET = 0.35;        // 地下深くの残響量
+  const DUCK_SMOOTHING = 0.15;    // 秒
 
   const $ = (id) => document.getElementById(id);
   const CONNECT_BTN = $('connect-btn');
@@ -28,6 +39,9 @@
   const COORDS = { x: $('pos-x'), y: $('pos-y'), z: $('pos-z') };
   const GAUGE_L = $('gauge-l');
   const GAUGE_R = $('gauge-r');
+  const BANNER = $('broadcast-banner');
+  const VAD_STATUS = $('vad-status');
+  const RECAL_BTN = $('recal-btn');
 
   let audio = null;            // { ctx, master, analyser*, noiseBuffer }
   let room = null;
@@ -41,6 +55,9 @@
   let wanted = new Set();      // 購読すべき uuid
   const voices = new Map();    // uuid -> Voice
   let myState = null;
+  let duckOn = false;
+  let duckPercent = 30;        // 放送中に他の音声が残る割合 (%)。サーバーの設定値
+  let eavesdrop = null;        // Super Admin のみ: null | 'all' | チャンネル番号
 
   // ---------------------------------------------------------------- Web Audio
 
@@ -52,6 +69,26 @@
     const analyserL = ctx.createAnalyser();
     const analyserR = ctx.createAnalyser();
     [analyserMaster, analyserL, analyserR].forEach((a) => { a.fftSize = 256; });
+
+    // 放送以外の音声はすべて bus 経由にして、放送中だけ bus を絞る（ダッキング）
+    const bus = ctx.createGain();
+    bus.connect(master);
+
+    // 水中の「ボコボコ」用 LFO（全 Voice で共有）
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = WATER_TREMOLO_HZ;
+    lfo.start();
+
+    // 地下深くの残響（全 Voice で共有）。1.6 秒で減衰するノイズをインパルス応答にする
+    const reverb = ctx.createConvolver();
+    const irLen = Math.floor(ctx.sampleRate * 1.6);
+    const ir = ctx.createBuffer(2, irLen, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch);
+      for (let i = 0; i < irLen; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / irLen, 3);
+    }
+    reverb.buffer = ir;
+    reverb.connect(bus);
 
     // 複数発話が重なっても音割れしないよう最終段にコンプレッサ（仕様書 §3.2）
     const compressor = ctx.createDynamicsCompressor();
@@ -69,13 +106,13 @@
     const data = noiseBuffer.getChannelData(0);
     for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
 
-    audio = { ctx, master, analyserMaster, analyserL, analyserR, noiseBuffer };
+    audio = { ctx, master, bus, lfo, reverb, analyserMaster, analyserL, analyserR, noiseBuffer };
     return audio;
   }
 
   class Voice {
     constructor(track) {
-      const { ctx, master, noiseBuffer } = setupAudio();
+      const { ctx, master, bus, lfo, reverb, noiseBuffer } = setupAudio();
       this.ctx = ctx;
 
       // Chromium は MediaStream をメディア要素に接続しないと WebAudio へ音が流れない。
@@ -85,6 +122,28 @@
       AUDIO_CONTAINER.appendChild(this.element);
 
       this.source = ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+
+      // 全体放送: そのまま中央へ（距離減衰・ノイズ・ダッキングの対象外）
+      this.globalGain = ctx.createGain();
+      this.globalGain.gain.value = 0;
+      this.source.connect(this.globalGain).connect(master);
+
+      // 話者の状態による演出: スニーク(小声) -> 水中(こもり + ボコボコ)
+      this.sneakGain = ctx.createGain();
+      this.waterLp = ctx.createBiquadFilter();
+      this.waterLp.type = 'lowpass';
+      this.waterLp.frequency.value = 20000;
+      this.tremolo = ctx.createGain();
+      this.tremoloDepth = ctx.createGain();
+      this.tremoloDepth.gain.value = 0;
+      lfo.connect(this.tremoloDepth).connect(this.tremolo.gain);
+      this.source.connect(this.sneakGain).connect(this.waterLp).connect(this.tremolo);
+      this.fx = this.tremolo;
+
+      // 地下深くの残響（近接のみ）
+      this.reverbSend = ctx.createGain();
+      this.reverbSend.gain.value = 0;
+      this.fx.connect(this.reverbSend).connect(reverb);
 
       // 近接: lowpass -> HRTF panner -> gain
       this.lowpass = ctx.createBiquadFilter();
@@ -98,7 +157,7 @@
       this.panner.rolloffFactor = 1;
       this.proxGain = ctx.createGain();
       this.proxGain.gain.value = 0;
-      this.source.connect(this.lowpass).connect(this.panner).connect(this.proxGain).connect(master);
+      this.fx.connect(this.lowpass).connect(this.panner).connect(this.proxGain).connect(bus);
 
       // ラジオ: 300Hz-3kHz の帯域制限（無線機の質感）-> gain
       this.radioHp = ctx.createBiquadFilter();
@@ -109,7 +168,7 @@
       this.radioLp.frequency.value = 3000;
       this.radioGain = ctx.createGain();
       this.radioGain.gain.value = 0;
-      this.source.connect(this.radioHp).connect(this.radioLp).connect(this.radioGain).connect(master);
+      this.fx.connect(this.radioHp).connect(this.radioLp).connect(this.radioGain).connect(bus);
 
       // ラジオノイズ
       this.noise = ctx.createBufferSource();
@@ -121,7 +180,7 @@
       noiseBp.Q.value = 0.5;
       this.noiseGain = ctx.createGain();
       this.noiseGain.gain.value = 0;
-      this.noise.connect(noiseBp).connect(this.noiseGain).connect(master);
+      this.noise.connect(noiseBp).connect(this.noiseGain).connect(bus);
       this.noise.start();
     }
 
@@ -133,17 +192,35 @@
     update(info) {
       const now = this.ctx.currentTime;
       if (!info) {
+        this.#ramp(this.globalGain.gain, 0);
         this.#ramp(this.proxGain.gain, 0);
         this.#ramp(this.radioGain.gain, 0);
         this.#ramp(this.noiseGain.gain, 0);
+        this.#ramp(this.reverbSend.gain, 0);
         return;
       }
+
+      if (info.k === 'global') {
+        this.#ramp(this.globalGain.gain, 1);
+        this.#ramp(this.proxGain.gain, 0);
+        this.#ramp(this.radioGain.gain, 0);
+        this.#ramp(this.noiseGain.gain, 0);
+        this.#ramp(this.reverbSend.gain, 0);
+        return;
+      }
+      this.#ramp(this.globalGain.gain, 0);
+
+      // 話者の状態による演出
+      this.#ramp(this.sneakGain.gain, info.is_sneaking ? SNEAK_GAIN : 1);
+      this.waterLp.frequency.setTargetAtTime(info.is_in_water ? WATER_LOWPASS_HZ : 20000, now, 0.1);
+      this.#ramp(this.tremoloDepth.gain, info.is_in_water ? WATER_TREMOLO_DEPTH : 0);
 
       if (info.k === 'radio') {
         const ng = info.ng || 0;
         this.#ramp(this.proxGain.gain, 0);
         this.#ramp(this.radioGain.gain, 1 - RADIO_NOISE_SHARE * ng);
         this.#ramp(this.noiseGain.gain, RADIO_NOISE_SHARE * ng * RADIO_NOISE_LEVEL);
+        this.#ramp(this.reverbSend.gain, 0);
         return;
       }
 
@@ -158,12 +235,14 @@
       this.#ramp(this.proxGain.gain, 1);
       this.#ramp(this.radioGain.gain, 0);
       this.#ramp(this.noiseGain.gain, 0);
+      this.#ramp(this.reverbSend.gain, y <= DEEP_Y ? REVERB_WET : 0);
     }
 
     destroy() {
       try { this.noise.stop(); } catch { /* 既に停止済み */ }
       this.source.disconnect();
-      [this.lowpass, this.panner, this.proxGain, this.radioHp, this.radioLp, this.radioGain, this.noiseGain]
+      [this.globalGain, this.sneakGain, this.waterLp, this.tremolo, this.tremoloDepth, this.reverbSend,
+        this.lowpass, this.panner, this.proxGain, this.radioHp, this.radioLp, this.radioGain, this.noiseGain]
         .forEach((n) => n.disconnect());
       this.element.srcObject = null;
       this.element.remove();
@@ -172,6 +251,26 @@
 
   function applyVisibility() {
     for (const [uuid, voice] of voices) voice.update(visible.get(uuid));
+  }
+
+  /** 他人の放送中は bus（放送以外の全音声）を絞る。自分が放送者のときは絞らない。 */
+  function applyDucking() {
+    if (!audio) return;
+    const gain = duckOn ? duckPercent / 100 : 1;
+    audio.bus.gain.setTargetAtTime(gain, audio.ctx.currentTime, DUCK_SMOOTHING);
+  }
+
+  function renderBanner(broadcasts) {
+    if (!BANNER) return;
+    if (!broadcasts.length) {
+      BANNER.classList.add('hidden');
+      BANNER.textContent = '';
+      return;
+    }
+    BANNER.textContent = '📢 放送中: ' + broadcasts
+      .map((b) => (b.msg ? `${b.n}「${b.msg}」` : b.n))
+      .join(' / ');
+    BANNER.classList.remove('hidden');
   }
 
   function updateListener(me) {
@@ -251,7 +350,10 @@
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${scheme}://${location.host}/ws/vchat/spatial/`);
 
-    ws.onopen = () => { wsRetryMs = 1000; };
+    ws.onopen = () => {
+      wsRetryMs = 1000;
+      if (eavesdrop !== null) ws.send(JSON.stringify({ t: 'eavesdrop', ch: eavesdrop }));
+    };
 
     ws.onmessage = (e) => {
       let msg;
@@ -262,6 +364,11 @@
         myState = visible.get(MY_UUID) || null;
         if (myState) updateListener(myState);
         applyVisibility();
+      } else if (msg.t === 'bc') {
+        duckPercent = Number.isFinite(msg.duck) ? msg.duck : duckPercent;
+        duckOn = msg.d.some((b) => b.u !== MY_UUID);
+        applyDucking();
+        renderBanner(msg.d);
       } else if (msg.t === 'sub') {
         msg.add.forEach((u) => wanted.add(u));
         msg.remove.forEach((u) => wanted.delete(u));
@@ -277,6 +384,9 @@
       myState = null;
       wanted = new Set();
       applyVisibility();
+      duckOn = false;
+      applyDucking();
+      renderBanner([]);
       if (e.code === 4401) {
         location.href = '/login/';
         return;
@@ -314,9 +424,10 @@
 
     if (myState) {
       for (const p of visible.values()) {
+        if (!p.p) continue; // 放送者など位置を持たない相手
+        if (p.k !== 'self' && p.w !== myState.w) continue; // 別ワールドはレーダーに出さない
         const relX = p.p[0] - myState.p[0];
         const relZ = p.p[2] - myState.p[2];
-        if (p.k !== 'self' && p.w !== myState.w) continue; // 別ワールドはレーダーに出さない
         if (Math.hypot(relX, relZ) > RADAR_RANGE) continue;
 
         const x = relX * scale;
@@ -368,6 +479,88 @@
     rafId = requestAnimationFrame(frame);
   }
 
+  // ---------------------------------------------------------------- VAD（仕様書 §3.3）
+
+  const vadState = { timer: null, probe: null, source: null, analyser: null, buf: null, gate: null, threshold: null,
+    calibrating: false, calibStart: 0, samples: [], open: true };
+
+  function micTrack() {
+    return room?.localParticipant?.getTrackPublication?.('microphone')?.track?.mediaStreamTrack || null;
+  }
+
+  function setVadStatus(text) {
+    if (VAD_STATUS) VAD_STATUS.textContent = text;
+  }
+
+  function stopVad() {
+    clearInterval(vadState.timer);
+    vadState.timer = null;
+    try { vadState.source?.disconnect(); } catch { /* 既に切断済み */ }
+    vadState.probe?.stop();
+    vadState.probe = vadState.source = vadState.analyser = null;
+    // ゲートを閉じたまま終わらない（ミュート解除・退出後に声が出なくなるのを防ぐ）
+    const mst = micTrack();
+    if (mst && !micMuted) mst.enabled = true;
+    vadState.open = true;
+  }
+
+  /** マイクを監視してゲートを制御する。しきい値が未決定（または recalibrate）なら先に 3 秒の静寂測定を行う。 */
+  function startVad({ recalibrate = false } = {}) {
+    stopVad();
+    const mst = micTrack();
+    if (!mst || !VAD) {
+      setVadStatus('マイク: VAD 無効');
+      return;
+    }
+    const { ctx } = setupAudio();
+    // ゲートで mst.enabled を切ると解析側も無音になるため、解析には clone を使う
+    vadState.probe = mst.clone();
+    vadState.probe.enabled = true;
+    vadState.source = ctx.createMediaStreamSource(new MediaStream([vadState.probe]));
+    vadState.analyser = ctx.createAnalyser();
+    vadState.analyser.fftSize = 1024;
+    vadState.buf = new Float32Array(vadState.analyser.fftSize);
+    vadState.source.connect(vadState.analyser);
+
+    if (recalibrate || vadState.threshold === null) {
+      vadState.calibrating = true;
+      vadState.calibStart = performance.now();
+      vadState.samples = [];
+    }
+    vadState.timer = setInterval(vadTick, 20);
+  }
+
+  function vadTick() {
+    const now = performance.now();
+    vadState.analyser.getFloatTimeDomainData(vadState.buf);
+    const db = VAD.rmsToDb(VAD.rmsOf(vadState.buf));
+
+    if (vadState.calibrating) {
+      vadState.samples.push(db);
+      const left = Math.max(0, VAD.CALIBRATION_MS - (now - vadState.calibStart));
+      setVadStatus(`マイク: 環境ノイズを測定中… あと ${Math.ceil(left / 1000)} 秒（静かにしてください）`);
+      if (left > 0) return;
+      const threshold = VAD.calibrate(vadState.samples);
+      vadState.calibrating = false;
+      if (threshold === null) {
+        setVadStatus('マイク: 測定に失敗しました（再調整してください）');
+        return;
+      }
+      vadState.threshold = threshold;
+      vadState.gate = VAD.createGate(threshold);
+      return;
+    }
+    if (!vadState.gate) return;
+
+    const open = vadState.gate.update(db, now);
+    const mst = micTrack();
+    if (mst && open !== vadState.open) {
+      mst.enabled = open; // 閉じている間は無音データのみ（DTX により SFU へのパケット送信がほぼ止まる）
+      vadState.open = open;
+    }
+    setVadStatus(`マイク: ${open ? '🎙 発話中' : '待機中'}（しきい値 ${vadState.threshold.toFixed(0)} dB）`);
+  }
+
   // ---------------------------------------------------------------- 接続 / 切断
 
   function showActive(on) {
@@ -378,6 +571,10 @@
 
   function teardown(statusText) {
     active = false;
+    stopVad();
+    setVadStatus('');
+    duckOn = false;
+    renderBanner([]);
     clearTimeout(wsRetryTimer);
     if (rafId) cancelAnimationFrame(rafId);
     rafId = null;
@@ -415,6 +612,7 @@
       room = await connectRoom();
       showActive(true);
       STATUS.innerText = '状態: 接続成功（立体音響有効）';
+      startVad({ recalibrate: true });
       openSpatialWS();
       frame();
     } catch (e) {
@@ -434,10 +632,22 @@
       return;
     }
     micMuted = next;
+    if (micMuted) stopVad();
+    else startVad(); // しきい値は保持。ミュート解除でゲートを開き直す
     MUTE_BTN.innerText = micMuted ? 'マイクを解除' : 'マイクをミュート';
     MUTE_BTN.classList.toggle('active', micMuted);
     STATUS.innerText = micMuted ? '状態: ミュート中' : '状態: 接続中';
   });
 
+  RECAL_BTN?.addEventListener('click', () => { if (room && !micMuted) startVad({ recalibrate: true }); });
+
   LEAVE_BTN.addEventListener('click', () => teardown('状態: 退出しました'));
+
+  // 管理パネル（admin.js）向けの最小インターフェース
+  window.MSALDash = {
+    setEavesdrop(ch) {
+      eavesdrop = ch;
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'eavesdrop', ch }));
+    },
+  };
 })();

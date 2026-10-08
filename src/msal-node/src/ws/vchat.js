@@ -2,13 +2,14 @@ const { WebSocketServer } = require('ws');
 const cookie = require('cookie');
 const cookieSignature = require('cookie-signature');
 const redisClient = require('../redisClient');
-const { computeVisible, isValidPlayer } = require('../visibility');
+const { computeVisible } = require('../visibility');
+const { loadAllPlayers } = require('../players');
+const { state, isSuperAdmin } = require('../services');
 
 const WS_PATHS = new Set(['/ws/vchat/', '/ws/vchat/spatial/']);
 // 仕様: 座標同期は 250ms 周期（Plugin 5 ticks に合わせる）
 const BROADCAST_INTERVAL_MS = 250;
 const HEARTBEAT_INTERVAL_MS = 30_000;
-const PLAYER_KEY_PATTERN = 'vchat:player:*';
 
 async function resolveSession(req, sessionSecret) {
   const raw = cookie.parse(req.headers.cookie || '')['connect.sid'];
@@ -29,30 +30,6 @@ async function resolveSession(req, sessionSecret) {
   }
 }
 
-/** SCAN + MGET で全プレイヤー状態を 1 回だけ取得する（KEYS はブロッキングなので使わない）。 */
-async function loadAllPlayers() {
-  const keys = [];
-  for await (const key of redisClient.scanIterator({ MATCH: PLAYER_KEY_PATTERN, COUNT: 200 })) {
-    // redis v4 は 1 件ずつ、v5 は配列で返す
-    if (Array.isArray(key)) keys.push(...key);
-    else keys.push(key);
-  }
-  if (keys.length === 0) return [];
-
-  const values = await redisClient.mGet(keys);
-  const players = [];
-  for (const raw of values) {
-    if (!raw) continue;
-    try {
-      const parsed = JSON.parse(raw);
-      if (isValidPlayer(parsed)) players.push(parsed);
-    } catch (e) {
-      console.error('[ws] invalid player JSON:', e.message);
-    }
-  }
-  return players;
-}
-
 function isAllowedOrigin(req, allowedOrigins) {
   const origin = req.headers.origin;
   if (!origin) return false;
@@ -65,8 +42,8 @@ function isAllowedOrigin(req, allowedOrigins) {
 }
 
 function attachVChatWebSocket(server, { sessionSecret, allowedOrigins = [] }) {
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
-  // ws -> { uuid, subs:Set<string> }（認証済みクライアントのみ）
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 256 });
+  // ws -> { uuid, isSuper, subs:Set<string>, eavesdrop, bcVersion }（認証済みクライアントのみ）
   const clients = new Map();
 
   server.on('upgrade', (req, socket, head) => {
@@ -90,12 +67,22 @@ function attachVChatWebSocket(server, { sessionSecret, allowedOrigins = [] }) {
     ws.on('pong', () => { ws.isAlive = true; });
     ws.on('error', (e) => console.error('[ws] client error:', e.message));
     ws.on('close', () => clients.delete(ws));
+    // クライアント → サーバー: 傍受設定のみ（Super Admin 限定）
+    ws.on('message', (data) => {
+      const client = clients.get(ws);
+      if (!client?.isSuper) return;
+      let msg;
+      try { msg = JSON.parse(data.toString()); } catch { return; }
+      if (msg?.t !== 'eavesdrop') return;
+      const ch = msg.ch;
+      if (ch === null || ch === 'all' || (Number.isInteger(ch) && ch >= 1 && ch <= 999)) client.eavesdrop = ch;
+    });
 
     resolveSession(req, sessionSecret)
       .then((session) => {
         if (ws.readyState !== ws.OPEN) return;
         if (!session) return ws.close(4401, 'unauthorized');
-        clients.set(ws, { uuid: session.uuid, subs: new Set() });
+        clients.set(ws, { uuid: session.uuid, isSuper: isSuperAdmin(session.uuid), subs: new Set(), eavesdrop: null, bcVersion: -1 });
       })
       .catch((e) => {
         console.error('[ws] session resolve failed:', e);
@@ -110,21 +97,31 @@ function attachVChatWebSocket(server, { sessionSecret, allowedOrigins = [] }) {
     try {
       const players = await loadAllPlayers();
       const byUuid = new Map(players.map((p) => [p.u, p]));
+      const ctxBase = { broadcasters: state.activeBroadcasts(), mutedChannels: state.mutedChannels() };
+      const version = state.getVersion();
 
-      for (const [ws, state] of clients) {
+      for (const [ws, client] of clients) {
         if (ws.readyState !== ws.OPEN) continue;
-        const me = byUuid.get(state.uuid);
-        if (!me) continue; // ゲーム内にいない（TTL 切れ）
+        // 放送・ダッキングの変化は version が変わったときだけ通知（接続直後は必ず送る）
+        if (client.bcVersion !== version) {
+          client.bcVersion = version;
+          ws.send(JSON.stringify({ t: 'bc', d: ctxBase.broadcasters, duck: state.getDuck() }));
+        }
 
-        const visible = computeVisible(me, players);
+        // ゲーム内にいない（TTL 切れ）場合は無音。ただし Super Admin は放送・傍受のためゲーム外でも参加できる
+        const me = byUuid.get(client.uuid)
+          ?? (client.isSuper ? { u: client.uuid, n: 'admin', p: [0, 0, 0], y: 0, w: null, c: 0, virtual: true } : null);
+        if (!me) continue;
+
+        const visible = computeVisible(me, players, { ...ctxBase, eavesdrop: client.eavesdrop });
         ws.send(JSON.stringify({ t: 'pos', d: visible }));
 
         // 購読リストは変化があったときだけ差分通知（詳細設計 §3）
         const next = new Set(visible.filter((p) => p.k !== 'self').map((p) => p.u));
-        const add = [...next].filter((u) => !state.subs.has(u));
-        const remove = [...state.subs].filter((u) => !next.has(u));
+        const add = [...next].filter((u) => !client.subs.has(u));
+        const remove = [...client.subs].filter((u) => !next.has(u));
         if (add.length || remove.length) {
-          state.subs = next;
+          client.subs = next;
           ws.send(JSON.stringify({ t: 'sub', add, remove }));
         }
       }

@@ -47,10 +47,19 @@ const config = {
   loginMaxFailures: int('LOGIN_MAX_FAILURES', 5),
   loginFailureWindowSec: int('LOGIN_FAILURE_WINDOW_SEC', 300),
   dbPath: process.env.DB_PATH || null,
+  // Super Admin（Sawamura）の UUID。カンマ区切り。ここに載っているユーザーだけが管理パネルを使える
+  superAdminUuids: list('SUPER_ADMIN_UUIDS').map((u) => u.toLowerCase()),
+  // 放送の最大継続時間（秒）。stop し忘れの防止
+  broadcastMaxSeconds: int('BROADCAST_MAX_SECONDS', 300),
+  // 放送中、他の音声が残る割合（%）の初期値。管理パネルから 0〜100 で変更可能（仕様書 §3.2）
+  defaultDuckPercent: int('DEFAULT_DUCK_PERCENT', 30),
   // 空欄 = 同一オリジンのみ。複数指定はカンマ区切り
   allowedOrigins: list('ALLOWED_ORIGINS'),
 };
 
+if (config.defaultDuckPercent < 0 || config.defaultDuckPercent > 100) {
+  throw new Error('DEFAULT_DUCK_PERCENT must be 0..100');
+}
 if (config.sessionSecret.length < 16 || config.sessionSecret === 'change-me') {
   throw new Error('SESSION_SECRET is too weak (16+ random characters required)');
 }

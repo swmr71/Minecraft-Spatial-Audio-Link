@@ -7,14 +7,16 @@ const RedisStore = require('connect-redis').default;
 
 const config = require('./config');
 const redisClient = require('./redisClient');
-const { tokenStore, loginLimiter } = require('./services');
+const { tokenStore, loginLimiter, state } = require('./services');
 const authRoutes = require('./routes/auth');
 const tokenRoutes = require('./routes/token');
 const livekitRoutes = require('./routes/livekit');
+const adminRoutes = require('./routes/admin');
 const { attachVChatWebSocket } = require('./ws/vchat');
 
 async function main() {
   await redisClient.connect();
+  await state.load();
 
   const app = express();
   app.disable('x-powered-by');
@@ -56,6 +58,7 @@ async function main() {
   app.use('/', authRoutes);
   app.use('/api/vc', tokenRoutes);
   app.use('/api/vc', livekitRoutes);
+  app.use('/api/vc', adminRoutes);
 
   app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
   // eslint-disable-next-line no-unused-vars

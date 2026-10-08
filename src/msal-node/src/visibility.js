@@ -28,22 +28,46 @@ function isValidPlayer(p) {
 /**
  * @param {object} me      自分のプレイヤーデータ
  * @param {object[]} all   全プレイヤー（自分を含んでよい）
- * @returns {object[]} 自分 + 聞くべき相手。k: self|prox|radio, dist: 距離, ng: ノイズ利得(radioのみ)
+ * @param {object} [ctx]
+ * @param {{u:string,n:string,msg?:string}[]} [ctx.broadcasters] 放送中のユーザー（全員に聞こえる。ゲーム内にいなくてもよい）
+ * @param {Set<number>} [ctx.mutedChannels] ミュート中のラジオチャンネル（そのチャンネルの発話者はラジオでは聞こえない）
+ * @param {null|'all'|number} [ctx.eavesdrop] 傍受（Super Admin のみ）。全チャンネル or 指定チャンネルの発話者を聞く
+ * @returns {object[]} 自分 + 聞くべき相手。k: self|global|prox|radio, dist: 距離, ng: ノイズ利得(radioのみ)
  */
-function computeVisible(me, all) {
+function computeVisible(me, all, ctx = {}) {
+  const { broadcasters = [], mutedChannels = new Set(), eavesdrop = null } = ctx;
   const result = [{ ...me, k: 'self', dist: 0 }];
+  const seen = new Set([me.u]);
+
+  // 放送は最優先（要件定義 §3.2 / 仕様書 §2.1）。位置情報は持たない（定位・減衰なし）
+  const byUuid = new Map(all.map((p) => [p.u, p]));
+  for (const b of broadcasters) {
+    if (seen.has(b.u)) continue;
+    seen.add(b.u);
+    const known = byUuid.get(b.u);
+    result.push({ u: b.u, n: known?.n ?? b.n, k: 'global', dist: 0, msg: b.msg });
+  }
 
   for (const other of all) {
-    if (other.u === me.u || !isValidPlayer(other)) continue;
+    if (seen.has(other.u) || !isValidPlayer(other)) continue;
 
     const sameWorld = (me.w ?? null) === (other.w ?? null);
     const d = sameWorld ? distance(me.p, other.p) : RADIO_MAX_DISTANCE;
-    const sameChannel = me.c > 0 && me.c === other.c;
+    const sameChannel = me.c > 0 && me.c === other.c && !mutedChannels.has(other.c);
 
+    let entry = null;
     if (sameChannel) {
-      result.push({ ...other, k: 'radio', dist: d, ng: radioNoiseGain(d) });
+      entry = { ...other, k: 'radio', dist: d, ng: radioNoiseGain(d) };
     } else if (sameWorld && d <= SUBSCRIBE_DISTANCE) {
-      result.push({ ...other, k: 'prox', dist: d });
+      entry = { ...other, k: 'prox', dist: d };
+    } else if (eavesdrop && other.c > 0 && (eavesdrop === 'all' || eavesdrop === other.c)) {
+      // 傍受は明瞭に聞く（ノイズなし）
+      entry = { ...other, k: 'radio', dist: d, ng: 0 };
+    }
+
+    if (entry) {
+      seen.add(other.u);
+      result.push(entry);
     }
   }
   return result;

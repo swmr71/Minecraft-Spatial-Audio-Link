@@ -119,9 +119,21 @@
 
         #active-controls { display: flex; gap: 10px; }
         .hidden { display: none !important; }
+        #broadcast-banner { background: #3b2f00; border: 1px solid #feca57; color: #feca57; border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 0.9rem; }
+        #vad-status { font-size: 0.8rem; color: #888; min-height: 1.2em; margin-bottom: 8px; }
+        #active-controls { flex-wrap: wrap; }
+        #admin-card { margin-top: 24px; padding-top: 16px; border-top: 1px solid #333; text-align: left; font-size: 0.9rem; }
+        #admin-card h2 { font-size: 1.1rem; margin: 0 0 8px; }
+        #admin-card h3 { font-size: 0.85rem; color: #aaa; margin: 14px 0 6px; }
+        #admin-card input, #admin-card select { box-sizing: border-box; width: 100%; padding: 8px; background: #222; border: 1px solid #333; color: #fff; border-radius: 6px; }
+        #admin-card .row { display: flex; gap: 8px; margin-top: 6px; }
+        #admin-card .row .btn { padding: 8px 12px; font-size: 0.85rem; }
+        #admin-card .note { color: #888; font-size: 0.8rem; margin-top: 4px; }
+        #admin-card table { width: 100%; font-size: 0.8rem; border-collapse: collapse; }
+        #admin-card th, #admin-card td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #222; }
     </style>
 </head>
-<body data-uuid="{{uuid}}" data-livekit-url="{{livekit_ws_url}}">
+<body data-uuid="{{uuid}}" data-livekit-url="{{livekit_ws_url}}" data-role="{{role}}">
 
 <div class="card">
     <h1>Spatial VC</h1>
@@ -149,25 +161,68 @@
         </div>
     </div>
 
+    <div id="broadcast-banner" class="hidden"></div>
     <div id="status-indicator">状態: 準備完了</div>
+    <div id="vad-status"></div>
 
     <div class="controls">
         <button id="connect-btn" class="btn btn-connect">ボイスチャットに接続</button>
 
         <div id="active-controls" class="hidden">
             <button id="mute-btn" class="btn btn-mute">マイクをミュート</button>
+            <button id="recal-btn" class="btn btn-mute" title="3秒間静かにして環境ノイズを測り直します">VAD再調整</button>
             <button id="leave-btn" class="btn btn-leave">退出</button>
         </div>
     </div>
 
     <div id="audio-container" style="display:none;"></div>
 
+    <div id="admin-card" class="hidden">
+        <h2>管理パネル (Super Admin)</h2>
+
+        <h3>全体放送</h3>
+        <input id="admin-bc-msg" type="text" maxlength="200" placeholder="メッセージ（任意）">
+        <div class="row">
+            <button id="admin-bc-start" class="btn btn-leave">放送開始</button>
+            <button id="admin-bc-stop" class="btn btn-mute">放送停止</button>
+        </div>
+        <div class="note">放送中: <span id="admin-broadcasts">なし</span>（あなたの声が全員に届きます）</div>
+
+        <h3>ダッキング（放送中に他の音量が残る割合）</h3>
+        <input id="admin-duck" type="range" min="0" max="100" step="1" value="30">
+        <div class="note"><span id="admin-duck-val">30</span> %</div>
+
+        <h3>ラジオチャンネル</h3>
+        <div class="row">
+            <input id="admin-channel" type="number" min="1" max="999" placeholder="ch">
+            <button id="admin-mute" class="btn btn-mute">ミュート</button>
+            <button id="admin-unmute" class="btn btn-mute">解除</button>
+        </div>
+        <div class="note">ミュート中: <span id="admin-muted">なし</span></div>
+
+        <h3>傍受</h3>
+        <div class="row">
+            <select id="admin-eaves-mode">
+                <option value="off">OFF</option>
+                <option value="all">全チャンネル</option>
+                <option value="channel">チャンネル指定</option>
+            </select>
+            <input id="admin-eaves-ch" class="hidden" type="number" min="1" max="999" placeholder="ch">
+        </div>
+
+        <h3>オンライン</h3>
+        <table><thead><tr><th>名前</th><th>ワールド</th><th>ch</th></tr></thead><tbody id="admin-players"></tbody></table>
+        <div id="admin-msg" class="note"></div>
+    </div>
+
     <form method="POST" action="/logout/" style="margin-top:16px;">
         <button type="submit" class="btn" style="background:transparent;color:#888;font-size:12px;">ログアウト</button>
     </form>
 </div>
 
+<script src="/static/vad.js"></script>
 <script src="/static/dashboard.js"></script>
+<script src="/static/admin.js"></script>
 
 </body>
 </html>
