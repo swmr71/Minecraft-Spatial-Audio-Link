@@ -4,7 +4,7 @@ const cookieSignature = require('cookie-signature');
 const redisClient = require('../redisClient');
 const { computeVisible } = require('../visibility');
 const { loadAllPlayers } = require('../players');
-const { state, isSuperAdmin } = require('../services');
+const { state, audio, isSuperAdmin } = require('../services');
 
 const WS_PATHS = new Set(['/ws/vchat/', '/ws/vchat/spatial/']);
 // 仕様: 座標同期は 250ms 周期（Plugin 5 ticks に合わせる）
@@ -48,6 +48,13 @@ function attachVChatWebSocket(server, { sessionSecret, allowedOrigins = [] }) {
 
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
+    // WebSocket 以外の Upgrade（JDK HttpClient の既定の h2c アップグレードなど）は明示的に断る。
+    // 無言で切断すると、クライアント側で「HTTP 404 / 空のレスポンス」という分かりにくいエラーになる。
+    if (String(req.headers.upgrade).toLowerCase() !== 'websocket') {
+      const body = 'Only WebSocket upgrades are supported. HTTP clients must use HTTP/1.1 without h2c upgrade.';
+      socket.write(`HTTP/1.1 426 Upgrade Required\r\nUpgrade: websocket\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+      return socket.destroy();
+    }
     const { pathname } = new URL(req.url, 'http://localhost');
     if (!WS_PATHS.has(pathname)) {
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
@@ -97,7 +104,7 @@ function attachVChatWebSocket(server, { sessionSecret, allowedOrigins = [] }) {
     try {
       const players = await loadAllPlayers();
       const byUuid = new Map(players.map((p) => [p.u, p]));
-      const ctxBase = { broadcasters: state.activeBroadcasts(), mutedChannels: state.mutedChannels() };
+      const ctxBase = { broadcasters: state.activeBroadcasts(), mutedChannels: state.mutedChannels(), sources: audio.listForVisibility() };
       const version = state.getVersion();
 
       for (const [ws, client] of clients) {

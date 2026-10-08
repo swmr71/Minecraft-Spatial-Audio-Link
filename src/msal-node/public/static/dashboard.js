@@ -3,6 +3,7 @@
  * - 近接: HRTF + 50m で無音になる距離減衰 + 距離に応じた高域カット（仕様書 §3.1）
  * - ラジオ: バンドパス + 距離に応じたノイズ混入（要件定義 §3.3 / §5.2）、定位なし
  * - 全体放送: 距離・方向・ノイズなしでステレオ中央。放送中は他の音量をダッキング（§3.2）
+ * - 音源: 動画の音など座標付きスピーカー（k:src）。range 以内で聞こえ、距離で線形に減衰、音量は vol
  * - 演出: スニーク中は小声、水中は「ボコボコ」フィルタ、地下深くは残響（プラグイン仕様 §4）
  * - VAD: 接続時 3 秒の静寂測定 → 背景ノイズ + 5dB をしきい値に送信ゲート（§3.3 / vad.js）
  */
@@ -209,6 +210,27 @@
         return;
       }
       this.#ramp(this.globalGain.gain, 0);
+
+      if (info.k === 'src') {
+        // 動画の音など: 演出（スニーク・水中・残響）なし。範囲は音源ごとの range、音量は vol
+        this.#ramp(this.sneakGain.gain, 1);
+        this.waterLp.frequency.setTargetAtTime(20000, now, 0.1);
+        this.#ramp(this.tremoloDepth.gain, 0);
+        this.#ramp(this.reverbSend.gain, 0);
+        this.panner.maxDistance = info.range;
+        this.panner.refDistance = Math.max(1, Math.min(4, info.range / 8));
+        this.lowpass.frequency.setTargetAtTime(LOWPASS_NEAR_HZ, now, 0.1);
+        const [sx, sy, sz] = info.p;
+        this.panner.positionX.setTargetAtTime(sx, now, 0.1);
+        this.panner.positionY.setTargetAtTime(sy, now, 0.1);
+        this.panner.positionZ.setTargetAtTime(sz, now, 0.1);
+        this.#ramp(this.proxGain.gain, info.vol ?? 1);
+        this.#ramp(this.radioGain.gain, 0);
+        this.#ramp(this.noiseGain.gain, 0);
+        return;
+      }
+      this.panner.maxDistance = PROX_AUDIBLE;
+      this.panner.refDistance = 1;
 
       // 話者の状態による演出
       this.#ramp(this.sneakGain.gain, info.is_sneaking ? SNEAK_GAIN : 1);
@@ -432,13 +454,13 @@
 
         const x = relX * scale;
         const y = relZ * scale;
-        RADAR_CTX.fillStyle = p.k === 'self' ? '#00d2d3' : p.k === 'radio' ? '#feca57' : '#ff7675';
+        RADAR_CTX.fillStyle = p.k === 'self' ? '#00d2d3' : p.k === 'radio' ? '#feca57' : p.k === 'src' ? '#55efc4' : '#ff7675';
         RADAR_CTX.beginPath();
         RADAR_CTX.arc(x, y, 4, 0, Math.PI * 2);
         RADAR_CTX.fill();
         RADAR_CTX.fillStyle = '#fff';
         RADAR_CTX.font = '10px sans-serif';
-        RADAR_CTX.fillText(p.n, x + 6, y + 4);
+        RADAR_CTX.fillText(p.k === 'src' ? `🔊 ${p.n}` : p.n, x + 6, y + 4);
       }
     }
     RADAR_CTX.restore();

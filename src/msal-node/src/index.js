@@ -7,11 +7,12 @@ const RedisStore = require('connect-redis').default;
 
 const config = require('./config');
 const redisClient = require('./redisClient');
-const { tokenStore, loginLimiter, state } = require('./services');
+const { tokenStore, loginLimiter, state, audio } = require('./services');
 const authRoutes = require('./routes/auth');
 const tokenRoutes = require('./routes/token');
 const livekitRoutes = require('./routes/livekit');
 const adminRoutes = require('./routes/admin');
+const audioRoutes = require('./routes/audio');
 const { attachVChatWebSocket } = require('./ws/vchat');
 
 async function main() {
@@ -32,6 +33,9 @@ async function main() {
     });
     next();
   });
+
+  // 音源の PCM ストリーム（長時間の POST）。ボディパーサー・セッションより前に置く
+  app.use('/api/vc/plugin/audio', audioRoutes.pushRouter);
 
   // 既定は同一オリジンのみ。ALLOWED_ORIGINS を指定したときだけ CORS を許可する。
   app.use(cors({
@@ -59,6 +63,7 @@ async function main() {
   app.use('/api/vc', tokenRoutes);
   app.use('/api/vc', livekitRoutes);
   app.use('/api/vc', adminRoutes);
+  app.use('/api/vc', audioRoutes.router);
 
   app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
   // eslint-disable-next-line no-unused-vars
@@ -68,6 +73,9 @@ async function main() {
   });
 
   const server = http.createServer(app);
+  // push 方式の音源は何時間も続く 1 本の POST になるため、リクエスト全体のタイムアウトは無効にする
+  // （ヘッダ受信のタイムアウトは維持。短い JSON の API はボディサイズ制限で守る）
+  server.requestTimeout = 0;
   const wss = attachVChatWebSocket(server, {
     sessionSecret: config.sessionSecret,
     allowedOrigins: config.allowedOrigins,
@@ -90,6 +98,7 @@ async function main() {
     console.log(`[msal-node] ${signal} received, shutting down...`);
     clearInterval(sweeper);
     wss.close();
+    await audio.stopAll().catch(() => {});
     for (const ws of wss.clients) ws.close(1001, 'server shutting down');
     server.close(async () => {
       await redisClient.quit().catch(() => {});

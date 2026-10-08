@@ -32,10 +32,11 @@ function isValidPlayer(p) {
  * @param {{u:string,n:string,msg?:string}[]} [ctx.broadcasters] 放送中のユーザー（全員に聞こえる。ゲーム内にいなくてもよい）
  * @param {Set<number>} [ctx.mutedChannels] ミュート中のラジオチャンネル（そのチャンネルの発話者はラジオでは聞こえない）
  * @param {null|'all'|number} [ctx.eavesdrop] 傍受（Super Admin のみ）。全チャンネル or 指定チャンネルの発話者を聞く
- * @returns {object[]} 自分 + 聞くべき相手。k: self|global|prox|radio, dist: 距離, ng: ノイズ利得(radioのみ)
+ * @param {{u:string,n:string,p:number[],w:string,range:number,vol:number}[]} [ctx.sources] 音源（座標付きスピーカー。動画の音など）。range 以内で聞こえる
+ * @returns {object[]} 自分 + 聞くべき相手。k: self|global|prox|radio|src, dist: 距離, ng: ノイズ利得(radioのみ)
  */
 function computeVisible(me, all, ctx = {}) {
-  const { broadcasters = [], mutedChannels = new Set(), eavesdrop = null } = ctx;
+  const { broadcasters = [], mutedChannels = new Set(), eavesdrop = null, sources = [] } = ctx;
   const result = [{ ...me, k: 'self', dist: 0 }];
   const seen = new Set([me.u]);
 
@@ -68,6 +69,15 @@ function computeVisible(me, all, ctx = {}) {
     if (entry) {
       seen.add(other.u);
       result.push(entry);
+    }
+  }
+
+  // 音源: 同一ワールドで range 以内のものだけ（購読 = 可聴距離）。ワールド越境はしない
+  for (const src of sources) {
+    if (!me.w || me.w !== src.w) continue;
+    const d = distance(me.p, src.p);
+    if (d <= src.range) {
+      result.push({ u: src.u, n: src.n, p: src.p, w: src.w, k: 'src', dist: d, range: src.range, vol: src.vol });
     }
   }
   return result;

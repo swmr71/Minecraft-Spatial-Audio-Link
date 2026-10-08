@@ -18,7 +18,9 @@ import java.util.function.Consumer;
  */
 public class BackendApiClient {
 
+    // HTTP/1.1 固定。既定の HTTP/2 は cleartext で h2c アップグレードを試み、Node の upgrade ハンドラに拒否される。
     private final HttpClient client = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(3))
             .build();
     private final String baseUrl;

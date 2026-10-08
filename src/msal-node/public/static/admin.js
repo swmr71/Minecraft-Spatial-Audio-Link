@@ -88,6 +88,20 @@
       }
       return tr;
     }));
+    const audioList = $('admin-audio');
+    audioList.replaceChildren(...st.audio.map((a) => {
+      const row = document.createElement('div');
+      row.className = 'audio-row';
+      const label = document.createElement('span');
+      label.textContent = `🔊 ${a.id}（${a.mode}${a.mode === 'push' ? (a.pushing ? ' 受信中' : ' 待機') : ''} / ${a.world} ${a.pos.map((n) => Math.round(n)).join(',')} / ${a.range}m）`;
+      const stop = document.createElement('button');
+      stop.className = 'btn btn-mute';
+      stop.textContent = '停止';
+      stop.addEventListener('click', () => act(`音源 ${a.id} 停止`, () => call('audio/stop', { id: a.id })));
+      row.append(label, stop);
+      return row;
+    }));
+    if (!st.audio.length) audioList.textContent = 'なし';
     $('admin-muted').textContent = st.muted.length ? st.muted.join(', ') : 'なし';
     $('admin-broadcasts').textContent = st.broadcasts.length
       ? st.broadcasts.map((b) => (b.msg ? `${b.n}「${b.msg}」` : b.n)).join(' / ')

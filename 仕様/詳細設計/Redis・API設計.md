@@ -45,6 +45,7 @@ msal-node は **250ms 周期**で 1 回だけ Redis から全プレイヤーを�
 | メッセージ | 内容 |
 | :--- | :--- |
 | `{"t":"pos","d":[…]}` | 毎周期。自分（`k:"self"`）と聞くべき相手の状態。各要素は §1 のスキーマ + `k`（`self` / `global` / `prox` / `radio`）, `dist`（距離 m）, `ng`（ラジオのノイズ利得 0..1、`radio` のみ）, `msg`（`global` のみ）。`global`（放送者）は位置を持たない |
+| `k:"src"` | 音源（動画の音など）。`p`, `dist`, `range`, `vol` を持つ。`src` は同一ワールドで `range` 以内のみ |
 | `{"t":"bc","d":[{u,n,msg}…],"duck":30}` | 放送中のユーザー一覧とダッキング量（他の音声が残る %）。接続直後と**変化したときだけ**送る |
 | `{"t":"sub","add":[uuid…],"remove":[uuid…]}` | 購読リストに**変化があったときだけ**送る差分。クライアントはこれに従って LiveKit のトラックを購読 / 解除する |
 
@@ -75,6 +76,10 @@ msal-node は **250ms 周期**で 1 回だけ Redis から全プレイヤーを�
 | `/api/vc/admin/settings` | POST | セッション（Super Admin） | `{duck: 0-100}` ダッキング量 |
 | `/api/vc/admin/state` | GET | セッション（Super Admin） | オンライン一覧 / 放送中 / ミュート中 / ダッキング量 |
 | `/healthz` | GET | なし | 死活監視用 |
+
+> 音源（動画の音など）の API は [音源API.md](音源API.md) を参照。
+
+> WebSocket 以外の `Upgrade` ヘッダ（JDK `HttpClient` 既定の h2c アップグレードなど）には `426` を返す。HTTP クライアントは HTTP/1.1 を使うこと。
 
 > 変更系 API は `Content-Type: application/json` のみ受け付ける（それ以外は 415）。放送の最大継続時間は `BROADCAST_MAX_SECONDS`（既定 300 秒）で自動終了。ミュート中チャンネルとダッキング量は Redis の `vchat:settings` に永続化。
 

@@ -15,6 +15,7 @@ flowchart LR
 | [`src/msal-plugin`](src/msal-plugin) | Paper プラグイン（座標収集・`/vc`・`/radio`）。Java 21 / Maven |
 | [`src/msal-node`](src/msal-node) | バックエンド（Express + WebSocket + Web UI）。Node.js 22.13+ |
 | [`src/msal-livekit`](src/msal-livekit) | LiveKit サーバー設定のサンプル |
+| [`integrations/mcvideo`](integrations/mcvideo) | 動画表示プラグイン VideoMap の音声を VC で流すパッチ |
 | [`仕様`](仕様) | 要件定義・仕様書・詳細設計（実装状況は [仕様書 §8](仕様/基本/仕様書.md)） |
 
 ## 仕組み（要約）
@@ -33,6 +34,8 @@ flowchart LR
 | 演出 | 話者の状態 | スニーク = 小声、水中 = こもり + ボコボコ、地下深く = 残響 |
 
 マイクは **VAD** で制御されます。接続時に 3 秒間の静寂を測定し、背景ノイズ + 5dB を超えたときだけ送信します（ダッシュボードの「VAD再調整」で測り直し可能）。
+
+**音源 API**: 動画の音などを座標付きスピーカーとして流せます（近づくと聞こえ、離れると聞こえなくなる）。API は [`仕様/詳細設計/音源API.md`](仕様/詳細設計/音源API.md)、VideoMap との連携は [`integrations/mcvideo`](integrations/mcvideo) を参照。
 
 詳細は [`仕様`](仕様) を参照。
 

@@ -248,6 +248,37 @@ test('backend 通しテスト（認証・ワンタイム・総当たり対策・
       bws.close();
     });
 
+    await t.test('WebSocket 以外の Upgrade（JDK HttpClient の h2c など）は無言で切らず 426 で断る', async () => {
+      const res = await new Promise((resolve, reject) => {
+        const req = require('node:http').request({
+          host: '127.0.0.1', port, path: '/api/vc/token/generate/', method: 'POST',
+          headers: { Connection: 'Upgrade, HTTP2-Settings', Upgrade: 'h2c', 'HTTP2-Settings': 'AAMAAABkAAQCAAAAAAIAAAAA', 'content-type': 'application/json' },
+        });
+        req.on('response', (r) => { r.resume(); resolve(r.statusCode); });
+        req.on('error', reject);
+        req.end('{}');
+      });
+      assert.equal(res, 426);
+    });
+
+    await t.test('音源 API: 共有シークレット必須・入力検証（LiveKit なしで確認できる範囲）', async () => {
+      const authed = { 'x-msal-key': KEY };
+      assert.equal((await post('/api/vc/plugin/audio/start', { id: 'a', world: 'w', x: 0, y: 0, z: 0 })).status, 401);
+      assert.equal((await fetch(`${base}/api/vc/plugin/audio/list`)).status, 401);
+      assert.equal((await post('/api/vc/plugin/audio/start', { id: 'bad id', world: 'w', x: 0, y: 0, z: 0 }, authed)).status, 400);
+      assert.equal((await post('/api/vc/plugin/audio/start', { id: 'a', world: 'w', x: 0, y: 0, z: 0, source: 'file:///etc/passwd' }, authed)).status, 400);
+      assert.equal((await post('/api/vc/plugin/audio/start', { id: 'a', world: 'w', x: 0, y: 0, z: 0, range: 1000 }, authed)).status, 400);
+      assert.equal((await post('/api/vc/plugin/audio/update', { id: 'nope', volume: 1 }, authed)).status, 404);
+      const noAuthPush = await fetch(`${base}/api/vc/plugin/audio/nope/push`, { method: 'POST', body: 'x' });
+      assert.equal(noAuthPush.status, 401);
+      const unknownPush = await fetch(`${base}/api/vc/plugin/audio/nope/push`, { method: 'POST', headers: authed, body: 'x' });
+      assert.equal(unknownPush.status, 404);
+      const list = await (await fetch(`${base}/api/vc/plugin/audio/list`, { headers: authed })).json();
+      assert.deepEqual(list, { audio: [] });
+      // 管理パネル側の停止は Super のみ
+      assert.equal((await post('/api/vc/admin/audio/stop', { id: 'x' })).status, 401);
+    });
+
     await t.test('認証中に切断してもサーバーは落ちない', async () => {
       const q = new WebSocket(`ws://127.0.0.1:${port}/ws/vchat/spatial/`, { headers: { cookie, origin: `http://127.0.0.1:${port}` } });
       q.on('open', () => q.terminate());

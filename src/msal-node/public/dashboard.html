@@ -129,6 +129,8 @@
         #admin-card .row { display: flex; gap: 8px; margin-top: 6px; }
         #admin-card .row .btn { padding: 8px 12px; font-size: 0.85rem; }
         #admin-card .note { color: #888; font-size: 0.8rem; margin-top: 4px; }
+        #admin-card .audio-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 0; }
+        #admin-card .audio-row .btn { width: auto; padding: 4px 10px; font-size: 0.8rem; }
         #admin-card table { width: 100%; font-size: 0.8rem; border-collapse: collapse; }
         #admin-card th, #admin-card td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #222; }
     </style>
@@ -209,6 +211,9 @@
             </select>
             <input id="admin-eaves-ch" class="hidden" type="number" min="1" max="999" placeholder="ch">
         </div>
+
+        <h3>音源（動画の音など）</h3>
+        <div id="admin-audio" class="note">なし</div>
 
         <h3>オンライン</h3>
         <table><thead><tr><th>名前</th><th>ワールド</th><th>ch</th></tr></thead><tbody id="admin-players"></tbody></table>

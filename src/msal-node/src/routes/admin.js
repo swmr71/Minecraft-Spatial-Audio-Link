@@ -1,7 +1,7 @@
 const express = require('express');
 const pluginAuth = require('../middleware/pluginAuth');
 const requireSuper = require('../middleware/requireSuper');
-const { state } = require('../services');
+const { state, audio } = require('../services');
 const { loadAllPlayers } = require('../players');
 const { isMcName, isUuid } = require('../validation');
 
@@ -58,7 +58,19 @@ router.get('/admin/state', requireSuper, async (req, res, next) => {
       broadcasts: state.activeBroadcasts(),
       muted: [...state.mutedChannels()].sort((a, b) => a - b),
       duck: state.getDuck(),
+      audio: audio.list(),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/admin/audio/stop', requireSuper, async (req, res, next) => {
+  if (!isJsonRequest(req)) return res.status(415).json({ error: 'JSON only' });
+  const id = req.body?.id;
+  if (typeof id !== 'string') return res.status(400).json({ error: 'id is required' });
+  try {
+    res.json({ ok: true, stopped: Number(await audio.stop(id)) });
   } catch (err) {
     next(err);
   }

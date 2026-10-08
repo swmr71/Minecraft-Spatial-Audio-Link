@@ -38,6 +38,8 @@ const config = {
     apiKey: required('LIVEKIT_API_KEY'),
     apiSecret: required('LIVEKIT_API_SECRET'),
     wsUrl: required('LIVEKIT_WS_URL'),
+    // サーバー側（音源の publish）が LiveKit に繋ぐ URL。内部アドレスがあればそちらを指定する
+    internalUrl: process.env.LIVEKIT_INTERNAL_URL || required('LIVEKIT_WS_URL'),
     room: process.env.LIVEKIT_ROOM || 'minecraft-vc',
     tokenTtl: process.env.LIVEKIT_TOKEN_TTL || '2h',
   },
@@ -53,6 +55,12 @@ const config = {
   broadcastMaxSeconds: int('BROADCAST_MAX_SECONDS', 300),
   // 放送中、他の音声が残る割合（%）の初期値。管理パネルから 0〜100 で変更可能（仕様書 §3.2）
   defaultDuckPercent: int('DEFAULT_DUCK_PERCENT', 30),
+  audio: {
+    ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
+    maxSources: int('AUDIO_MAX_SOURCES', 8),
+    // push 方式で、データが途切れてから音源を自動撤去するまでの秒数（停止し忘れ対策）
+    idleTimeoutSec: int('AUDIO_IDLE_TIMEOUT_SEC', 30),
+  },
   // 空欄 = 同一オリジンのみ。複数指定はカンマ区切り
   allowedOrigins: list('ALLOWED_ORIGINS'),
 };
