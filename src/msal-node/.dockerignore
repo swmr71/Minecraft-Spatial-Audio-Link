@@ -1,0 +1,8 @@
+node_modules
+test
+*.sqlite3
+*.sqlite3-journal
+.env
+.env.*
+Dockerfile
+.dockerignore

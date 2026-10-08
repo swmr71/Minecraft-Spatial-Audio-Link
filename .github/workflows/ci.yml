@@ -28,3 +28,20 @@ jobs:
       - run: npm test
         env:
           MSAL_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+
+  docker:
+    # compose の定義と msal-node のイメージ（npm ci / ffmpeg / ネイティブ依存）が壊れていないか確認する
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose config
+        working-directory: deploy
+        env:
+          LIVEKIT_NODE_IP: 127.0.0.1
+          LIVEKIT_API_SECRET: ci-secret-0123456789abcdef0123456789abcdef
+          REDIS_PASSWORD: ci-redis-0123456789abcdef
+          SESSION_SECRET: ci-session-0123456789abcdef
+          PLUGIN_API_KEY: ci-plugin-0123456789abcdef
+        run: docker compose config -q
+      - name: build msal-node image
+        run: docker build -t msal-node src/msal-node

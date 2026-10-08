@@ -1,0 +1,78 @@
+# LiveKit + Redis + msal-node をまとめて起動する。
+#   cp .env.example .env   # 値を埋める（LIVEKIT_NODE_IP などの IP もここ）
+#   docker compose up -d --build
+name: msal
+
+services:
+  redis:
+    image: redis:7-alpine
+    # 座標キーが勝手に消えないよう noeviction。セッション・ミュート設定のために AOF も有効
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD を設定してください}", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Paper（プラグイン）から繋ぐ口。LAN に公開するなら REDIS_BIND_IP を LAN の IP に（パスワード必須）
+    ports:
+      - "${REDIS_BIND_IP:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  livekit:
+    image: livekit/livekit-server:v1.13.1
+    environment:
+      # クライアントに「ここに UDP を送って」と伝える IP。LAN で試すなら LAN の IP、外へ出すなら外から見える IP
+      NODE_IP: ${LIVEKIT_NODE_IP:?LIVEKIT_NODE_IP を設定してください}
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET を設定してください}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: ${LIVEKIT_USE_EXTERNAL_IP:-false}
+    ports:
+      - "${LIVEKIT_PORT:-7880}:7880/tcp"   # シグナリング (ws/http)
+      - "7881:7881/tcp"                    # WebRTC の TCP フォールバック
+      - "7882:7882/udp"                    # WebRTC の音声（ルーターで開放するのはこれ）
+    restart: unless-stopped
+
+  msal-node:
+    build:
+      context: ../src/msal-node
+      args:
+        INSTALL_FFMPEG: ${INSTALL_FFMPEG:-1}
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    environment:
+      PORT: 8010
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET を設定してください}
+      PLUGIN_API_KEY: ${PLUGIN_API_KEY:?PLUGIN_API_KEY を設定してください}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      # ブラウザに渡す LiveKit のアドレス（ブラウザから届くもの）。https のページなら wss://...
+      LIVEKIT_WS_URL: ${LIVEKIT_PUBLIC_URL:-ws://${LIVEKIT_NODE_IP}:${LIVEKIT_PORT:-7880}}
+      # msal-node 自身が音源を publish するときの接続先（コンテナ間）
+      LIVEKIT_INTERNAL_URL: ws://livekit:7880
+      SUPER_ADMIN_UUIDS: ${SUPER_ADMIN_UUIDS:-}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      SESSION_MAX_AGE_HOURS: ${SESSION_MAX_AGE_HOURS:-12}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      AUDIO_MAX_SOURCES: ${AUDIO_MAX_SOURCES:-8}
+      AUDIO_IDLE_TIMEOUT_SEC: ${AUDIO_IDLE_TIMEOUT_SEC:-30}
+    ports:
+      - "${MSAL_BIND_IP:-0.0.0.0}:${MSAL_PORT:-8010}:8010"
+    volumes:
+      - msal-data:/data
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  msal-data:
