@@ -1,0 +1,10 @@
+# ソースからビルドするための上書き設定（ローカル開発用）。
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+services:
+  msal-node:
+    image: msal-node:local
+    build:
+      context: ../src/msal-node
+      args:
+        # 音源 API の URL 方式で使う ffmpeg。push 方式だけなら 0 でイメージが小さくなる
+        INSTALL_FFMPEG: ${INSTALL_FFMPEG:-1}

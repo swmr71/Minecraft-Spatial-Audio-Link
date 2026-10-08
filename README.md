@@ -44,6 +44,8 @@ flowchart LR
 ### 前提
 Redis、LiveKit サーバー、Node.js 22.13+、Java 25 / Maven、Paper 26.2。
 
+> **Docker でまとめて起動する場合**は [`deploy/`](deploy/README.md)（LiveKit + Redis + msal-node。IP などは `.env` で流し込む）を使うと、下の 1〜2 を省略できます。
+
 ### 1. LiveKit
 `src/msal-livekit/livekit.yaml.example` をコピーして `livekit.yaml` を作成し、`node_ip` とキーを設定して LiveKit を起動。
 UDP 7882（と TCP 7881）はクライアントから直接届く必要があります。Cloudflare Tunnel では UDP を通せないため、**ルーターのポート開放（二重ルーターなら両段）または TURN** が必要です。

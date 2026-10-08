@@ -1,0 +1,61 @@
+name: Docker image
+
+# msal-node のイメージをビルドして GHCR に公開する。
+#   main への push        -> ghcr.io/<owner>/msal-node:latest と :sha-<コミット>
+#   Pull Request          -> ビルドだけ（公開しない。Dockerfile が壊れていないかの確認）
+#   workflow_dispatch     -> 実行したブランチでビルドして公開（:sha-<コミット> のみ）
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/msal-node/**"
+      - ".github/workflows/docker-image.yml"
+  pull_request:
+    paths:
+      - "src/msal-node/**"
+      - ".github/workflows/docker-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # GHCR のイメージ名は小文字のみ
+      IMAGE: ghcr.io/${{ github.repository_owner }}/msal-node
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build (and push except on pull requests)
+        uses: docker/build-push-action@v6
+        with:
+          context: src/msal-node
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
