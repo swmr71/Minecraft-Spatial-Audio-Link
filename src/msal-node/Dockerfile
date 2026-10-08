@@ -1,6 +1,9 @@
 # msal-node（Node.js）。@livekit/rtc-node がネイティブ依存なので glibc の Debian を使う（Alpine は不可）
 FROM node:22-bookworm-slim
 
+LABEL org.opencontainers.image.source="https://github.com/swmr71/Minecraft-Spatial-Audio-Link" \
+      org.opencontainers.image.description="msal-node: Minecraft Spatial Audio Link backend"
+
 # ffmpeg は音源 API の「URL 方式」でだけ使う。不要なら --build-arg INSTALL_FFMPEG=0
 ARG INSTALL_FFMPEG=1
 RUN if [ "$INSTALL_FFMPEG" = "1" ]; then \

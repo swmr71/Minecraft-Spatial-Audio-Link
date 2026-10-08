@@ -1,6 +1,8 @@
-# LiveKit + Redis + msal-node をまとめて起動する。
+# LiveKit + Redis + msal-node をまとめて起動する。msal-node は GHCR のビルド済みイメージを使う。
 #   cp .env.example .env   # 値を埋める（LIVEKIT_NODE_IP などの IP もここ）
-#   docker compose up -d --build
+#   docker compose up -d
+# ソースからビルドして試すとき（ローカル開発）:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 name: msal
 
 services:
@@ -41,10 +43,8 @@ services:
     restart: unless-stopped
 
   msal-node:
-    build:
-      context: ../src/msal-node
-      args:
-        INSTALL_FFMPEG: ${INSTALL_FFMPEG:-1}
+    # GitHub Actions（docker-image.yml）が main への push ごとに公開する。固定したいなら sha-xxxxxxx タグを指定
+    image: ${MSAL_IMAGE:-ghcr.io/swmr71/msal-node:latest}
     depends_on:
       redis:
         condition: service_healthy

@@ -30,7 +30,7 @@ jobs:
           MSAL_TEST_REDIS_URL: redis://127.0.0.1:6379/15
 
   docker:
-    # compose の定義と msal-node のイメージ（npm ci / ffmpeg / ネイティブ依存）が壊れていないか確認する
+    # compose の定義が壊れていないか確認する（イメージのビルドは docker-image.yml）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +42,6 @@ jobs:
           REDIS_PASSWORD: ci-redis-0123456789abcdef
           SESSION_SECRET: ci-session-0123456789abcdef
           PLUGIN_API_KEY: ci-plugin-0123456789abcdef
-        run: docker compose config -q
-      - name: build msal-node image
-        run: docker build -t msal-node src/msal-node
+        run: |
+          docker compose config -q
+          docker compose -f docker-compose.yml -f docker-compose.build.yml config -q
