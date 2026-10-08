@@ -30,6 +30,10 @@ public class PlayerBroadcastTask extends BukkitRunnable {
     /** 前回の Redis 送信が終わっていない間は新しい送信を積まない（Redis が遅い・止まっているとき用）。 */
     private final AtomicBoolean publishing = new AtomicBoolean();
     private long lastSkipWarnMs;
+    // 送信失敗のログ制御（publish は同時に 1 本しか走らないが、スレッドは毎回変わるので volatile）
+    private volatile long lastFailLogMs;
+    private volatile int suppressedFailures;
+    private volatile boolean failing;
 
     public PlayerBroadcastTask(MSALPlugin plugin, JedisPool jedisPool, int ttlSeconds) {
         this.plugin = plugin;
@@ -81,9 +85,30 @@ public class PlayerBroadcastTask extends BukkitRunnable {
                 pipeline.setex("vchat:player:" + entry[0], ttlSeconds, entry[1]);
             }
             pipeline.sync();
+            if (failing) {
+                failing = false;
+                plugin.getLogger().info("Redis への送信が復旧しました。");
+            }
         } catch (Exception e) {
-            plugin.getLogger().warning("Redis broadcast failed: " + e.getMessage());
+            logFailure(e);
         }
+    }
+
+    /** 250ms ごとに同じ警告が出てログを埋めないよう、30 秒に 1 回だけ出す（間の失敗回数も添える）。 */
+    private void logFailure(Exception e) {
+        failing = true;
+        long now = System.currentTimeMillis();
+        if (now - lastFailLogMs < 30_000) {
+            suppressedFailures++;
+            return;
+        }
+        int skipped = suppressedFailures;
+        suppressedFailures = 0;
+        lastFailLogMs = now;
+        String target = plugin.getConfig().getString("redis.host", "127.0.0.1") + ":" + plugin.getConfig().getInt("redis.port", 6379);
+        plugin.getLogger().warning("Redis (" + target + ") への送信に失敗しました: " + e.getMessage()
+                + (skipped > 0 ? "（直近 30 秒で他に " + skipped + " 回）" : "")
+                + " — 接続先・パスワード・Redis 側の公開設定（bind）とファイアウォールを確認してください。復旧するまで 30 秒ごとに表示します。");
     }
 
     private static String toJson(String uuid, Player player, Location loc, int channel, long now) {
