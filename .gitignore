@@ -1,9 +1,16 @@
+# secrets / runtime
 .env
-*/livekit.yaml
-db.sqlite3
-__pycache__/
-*.pyc
-venv/
-.vscode/
+src/msal-livekit/livekit.yaml
+src/msal-plugin/config.yml
+*.sqlite3
+*.sqlite3-journal
+
+# node
 node_modules/
+
+# java
 target/
+
+# editors
+.vscode/
+.idea/

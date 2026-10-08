@@ -1,30 +1,34 @@
 const express = require('express');
 const { AccessToken } = require('livekit-server-sdk');
+const config = require('../config');
 
 const router = express.Router();
 
-// 2. LiveKitトークン発行
-router.post('/livekit/token/', async (req, res) => {
-  const mcName = req.session.mc_name;
-  const uuid = req.session.uuid;
+// 2. LiveKit トークン発行（Web ログイン済みユーザーのみ）
+router.post('/livekit/token/', async (req, res, next) => {
+  const { mc_name: mcName, uuid } = req.session;
 
   if (!mcName || !uuid) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const at = new AccessToken(
-    process.env.LIVEKIT_API_KEY || 'devkey',
-    process.env.LIVEKIT_API_SECRET,
-    { identity: uuid, name: mcName }
-  );
-  at.addGrant({
-    roomJoin: true,
-    room: 'minecraft-vc',
-    canPublish: true,
-    canSubscribe: true,
-  });
-
-  return res.json({ token: await at.toJwt() });
+  try {
+    const at = new AccessToken(config.livekit.apiKey, config.livekit.apiSecret, {
+      identity: uuid,
+      name: mcName,
+      ttl: config.livekit.tokenTtl,
+    });
+    at.addGrant({
+      roomJoin: true,
+      room: config.livekit.room,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: false,
+    });
+    return res.json({ token: await at.toJwt() });
+  } catch (err) {
+    return next(err);
+  }
 });
 
 module.exports = router;

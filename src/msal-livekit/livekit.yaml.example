@@ -1,9 +1,16 @@
+# cp livekit.yaml.example livekit.yaml して編集する（livekit.yaml は git 管理外）
 port: 7880
 
 rtc:
+  # UDP 7882 を 1 本に集約（ルーター側でこのポートを固定マッピングする）
   udp_port: 7882
+  # UDP が通らないクライアント向けの TCP フォールバック
+  tcp_port: 7881
   use_external_ip: false
+  # LiveKit サーバーから見た「クライアントが到達できる IP」。二重ルーター環境ではグローバル側の IP を指定する
   node_ip: "YOUR_SERVER_IP"
 
 keys:
+  # msal-node の LIVEKIT_API_KEY / LIVEKIT_API_SECRET と同じ組み合わせ
+  # API_KEY: SECRET （SECRET は `openssl rand -hex 32` などで生成した 32 文字以上）
   devkey: "YOUR_LIVEKIT_API_SECRET"

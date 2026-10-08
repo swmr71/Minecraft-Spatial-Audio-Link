@@ -12,3 +12,11 @@ commands:
   radio:
     description: 無線チャンネルを切り替える
     usage: /radio <channel>
+
+permissions:
+  msal.use:
+    description: /vc join と /radio を使用できる
+    default: true
+  msal.broadcast:
+    description: /vc broadcast を実行できる
+    default: op

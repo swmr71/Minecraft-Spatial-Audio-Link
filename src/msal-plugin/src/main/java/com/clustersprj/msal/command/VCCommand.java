@@ -5,14 +5,23 @@ import com.clustersprj.msal.api.BackendApiClient;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.title.Title;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
-import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabExecutor;
 import org.bukkit.entity.Player;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
+
 /** /vc join, /vc broadcast <message...> */
-public class VCCommand implements CommandExecutor {
+public class VCCommand implements TabExecutor {
+
+    private static final List<String> SUBCOMMANDS = List.of("join", "broadcast");
 
     private final MSALPlugin plugin;
     private final BackendApiClient backendApiClient;
@@ -27,16 +36,32 @@ public class VCCommand implements CommandExecutor {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
-            sender.sendMessage(Component.text("使い方: /vc <join|broadcast>", NamedTextColor.YELLOW));
+            sendUsage(sender);
             return true;
         }
 
-        switch (args[0].toLowerCase()) {
+        switch (args[0].toLowerCase(Locale.ROOT)) {
             case "join", "link" -> handleJoin(sender);
             case "broadcast" -> handleBroadcast(sender, args);
-            default -> sender.sendMessage(Component.text("使い方: /vc <join|broadcast>", NamedTextColor.YELLOW));
+            default -> sendUsage(sender);
         }
         return true;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (args.length != 1) {
+            return List.of();
+        }
+        String prefix = args[0].toLowerCase(Locale.ROOT);
+        return SUBCOMMANDS.stream()
+                .filter(s -> s.startsWith(prefix))
+                .filter(s -> !s.equals("broadcast") || sender.hasPermission("msal.broadcast"))
+                .toList();
+    }
+
+    private void sendUsage(CommandSender sender) {
+        sender.sendMessage(Component.text("使い方: /vc <join|broadcast>", NamedTextColor.YELLOW));
     }
 
     private void handleJoin(CommandSender sender) {
@@ -44,20 +69,36 @@ public class VCCommand implements CommandExecutor {
             sender.sendMessage(Component.text("このコマンドはゲーム内から実行してください。", NamedTextColor.RED));
             return;
         }
+        if (!player.hasPermission("msal.use")) {
+            player.sendMessage(Component.text("権限がありません。", NamedTextColor.RED));
+            return;
+        }
 
-        sender.sendMessage(Component.text("VC接続用のコードを発行しています...", NamedTextColor.GRAY));
+        player.sendMessage(Component.text("VC接続用のコードを発行しています...", NamedTextColor.GRAY));
 
         backendApiClient.generateLoginToken(
                 player.getUniqueId(),
                 player.getName(),
                 token -> Bukkit.getScheduler().runTask(plugin, () -> {
-                    Component message = Component.text("[VC接続] ここをクリックしてログイン（コード: " + token + "）", NamedTextColor.GREEN)
-                            .clickEvent(ClickEvent.openUrl(loginUrl));
+                    Component message = Component.text(
+                                    "[VC接続] ここをクリックしてログイン（コード: " + token + " / 5分間有効）",
+                                    NamedTextColor.GREEN)
+                            .clickEvent(ClickEvent.openUrl(buildLoginUrl(player.getName())));
                     player.sendMessage(message);
                 }),
-                error -> Bukkit.getScheduler().runTask(plugin, () ->
-                        player.sendMessage(Component.text("トークン発行に失敗しました: " + error, NamedTextColor.RED)))
+                error -> {
+                    // 内部URL・例外内容をプレイヤーに見せず、詳細はコンソールにだけ出す
+                    plugin.getLogger().warning("ログインコード発行に失敗 (" + player.getName() + "): " + error);
+                    Bukkit.getScheduler().runTask(plugin, () -> player.sendMessage(Component.text(
+                            "コードの発行に失敗しました。時間をおいて再度お試しください。", NamedTextColor.RED)));
+                }
         );
+    }
+
+    /** ログイン画面で Minecraft ID を自動入力させる。 */
+    private String buildLoginUrl(String mcName) {
+        String separator = loginUrl.contains("?") ? "&" : "?";
+        return loginUrl + separator + "mc_name=" + URLEncoder.encode(mcName, StandardCharsets.UTF_8);
     }
 
     private void handleBroadcast(CommandSender sender, String[] args) {
@@ -70,10 +111,10 @@ public class VCCommand implements CommandExecutor {
             return;
         }
 
-        String message = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-        Component title = Component.text(message, NamedTextColor.AQUA);
+        String message = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
+        Title title = Title.title(Component.text(message, NamedTextColor.AQUA), Component.empty());
         for (Player player : Bukkit.getOnlinePlayers()) {
-            player.showTitle(net.kyori.adventure.title.Title.title(title, Component.empty()));
+            player.showTitle(title);
         }
         sender.sendMessage(Component.text("放送しました: " + message, NamedTextColor.GRAY));
     }
