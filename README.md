@@ -12,7 +12,7 @@ flowchart LR
 
 | ディレクトリ | 内容 |
 | :--- | :--- |
-| [`src/msal-plugin`](src/msal-plugin) | Paper プラグイン（座標収集・`/vc`・`/radio`）。Java 21 / Maven |
+| [`src/msal-plugin`](src/msal-plugin) | Paper プラグイン（座標収集・`/vc`・`/radio`）。Java 25 / Maven / Paper 26.2 |
 | [`src/msal-node`](src/msal-node) | バックエンド（Express + WebSocket + Web UI）。Node.js 22.13+ |
 | [`src/msal-livekit`](src/msal-livekit) | LiveKit サーバー設定のサンプル |
 | [`integrations/mcvideo`](integrations/mcvideo) | 動画表示プラグイン VideoMap の音声を VC で流すパッチ |
@@ -42,7 +42,7 @@ flowchart LR
 ## セットアップ
 
 ### 前提
-Redis、LiveKit サーバー、Node.js 22.13+、Java 21 / Maven、Paper 1.20.x。
+Redis、LiveKit サーバー、Node.js 22.13+、Java 25 / Maven、Paper 26.2。
 
 ### 1. LiveKit
 `src/msal-livekit/livekit.yaml.example` をコピーして `livekit.yaml` を作成し、`node_ip` とキーを設定して LiveKit を起動。

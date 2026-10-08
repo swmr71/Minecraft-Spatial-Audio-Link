@@ -13,7 +13,7 @@
     <description>Minecraft Spatial Audio Link - 座標収集とVC連携プラグイン</description>
 
     <properties>
-        <maven.compiler.release>21</maven.compiler.release>
+        <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
@@ -32,7 +32,9 @@
         <dependency>
             <groupId>io.papermc.paper</groupId>
             <artifactId>paper-api</artifactId>
-            <version>1.20.4-R0.1-SNAPSHOT</version>
+            <!-- Paper 26.2 の最新ビルド。VideoMap の Gradle 設定（26.2.build.+）と同じ範囲。
+                 再現性が必要なら 26.2.build.<番号>-alpha のように固定する -->
+            <version>[26.2.build,26.3)</version>
             <scope>provided</scope>
         </dependency>
 

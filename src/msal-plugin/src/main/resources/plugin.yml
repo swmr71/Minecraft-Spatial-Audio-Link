@@ -1,7 +1,7 @@
 name: MSALPlugin
 version: '${project.version}'
 main: com.clustersprj.msal.MSALPlugin
-api-version: '1.20'
+api-version: '26.2'
 author: clusters-prj
 description: Minecraft Spatial Audio Link - 座標収集とVC連携プラグイン
 
