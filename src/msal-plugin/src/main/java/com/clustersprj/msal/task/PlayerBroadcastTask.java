@@ -13,6 +13,7 @@ import redis.clients.jedis.Pipeline;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 全プレイヤーの座標・向き・状態を収集し、Redis へ送信する。
@@ -26,6 +27,9 @@ public class PlayerBroadcastTask extends BukkitRunnable {
     private final MSALPlugin plugin;
     private final JedisPool jedisPool;
     private final int ttlSeconds;
+    /** 前回の Redis 送信が終わっていない間は新しい送信を積まない（Redis が遅い・止まっているとき用）。 */
+    private final AtomicBoolean publishing = new AtomicBoolean();
+    private long lastSkipWarnMs;
 
     public PlayerBroadcastTask(MSALPlugin plugin, JedisPool jedisPool, int ttlSeconds) {
         this.plugin = plugin;
@@ -48,7 +52,26 @@ public class PlayerBroadcastTask extends BukkitRunnable {
         if (entries.isEmpty()) {
             return;
         }
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> publish(entries));
+        if (!publishing.compareAndSet(false, true)) {
+            // 古い座標を積み上げても意味がない（TTL 5 秒）。最新の次回分で送り直す
+            if (now - lastSkipWarnMs > 30_000) {
+                lastSkipWarnMs = now;
+                plugin.getLogger().warning("Redis への送信が前回分でまだ終わっていないためスキップしています（Redis の応答が遅い可能性）");
+            }
+            return;
+        }
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    publish(entries);
+                } finally {
+                    publishing.set(false);
+                }
+            });
+        } catch (RuntimeException e) {
+            publishing.set(false); // プラグイン無効化中など
+            throw e;
+        }
     }
 
     private void publish(List<String[]> entries) {

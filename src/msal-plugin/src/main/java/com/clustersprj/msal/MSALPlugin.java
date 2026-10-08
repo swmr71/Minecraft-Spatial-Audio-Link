@@ -34,16 +34,22 @@ public final class MSALPlugin extends JavaPlugin {
         }
 
         JedisPoolConfig poolConfig = new JedisPoolConfig();
-        poolConfig.setMaxTotal(8);
+        poolConfig.setMaxTotal(4);
+        // Redis が遠い（トンネル越しなど）・止まっているとき、非同期スレッドが接続待ちで溜まらないようにする
+        poolConfig.setMaxWait(java.time.Duration.ofMillis(300));
+        // トンネルの再起動などで死んだ接続を、アイドル中に掃除する
+        poolConfig.setTestWhileIdle(true);
+        poolConfig.setTimeBetweenEvictionRuns(java.time.Duration.ofSeconds(30));
 
         String host = getConfig().getString("redis.host", "127.0.0.1");
         int port = getConfig().getInt("redis.port", 6379);
         String password = getConfig().getString("redis.password", "");
         int database = getConfig().getInt("redis.database", 0);
+        int timeoutMs = Math.max(200, getConfig().getInt("redis.timeout-ms", 1000));
 
         jedisPool = (password == null || password.isEmpty())
-                ? new JedisPool(poolConfig, host, port, 2000, null, database)
-                : new JedisPool(poolConfig, host, port, 2000, password, database);
+                ? new JedisPool(poolConfig, host, port, timeoutMs, null, database)
+                : new JedisPool(poolConfig, host, port, timeoutMs, password, database);
 
         BackendApiClient backendApiClient = new BackendApiClient(
                 getConfig().getString("backend.base-url", "http://127.0.0.1:8010"), apiKey);
