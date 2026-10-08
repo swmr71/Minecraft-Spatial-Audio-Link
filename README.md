@@ -75,6 +75,8 @@ jar を Paper の `plugins/` に置いて一度起動し、生成された `plug
 | `/vc mute <ch>` / `unmute <ch>` | `msal.mute.*` または `msal.mute.<ch>`（op） | ラジオチャンネルのミュート。ノードを LuckPerms のグループに付与すれば「担当チャンネル」だけ操作可能 |
 | `/radio <ch>` | `msal.use`（全員） | 無線チャンネル切替。`0` で解除 |
 
+別拠点の Paper（Cloudflare Tunnel 経由）をつなぐ場合は [`仕様/運用/別拠点のPaperをトンネルでつなぐ.md`](仕様/運用/別拠点のPaperをトンネルでつなぐ.md) を参照。
+
 ## 開発
 
 ```bash
