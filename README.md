@@ -64,8 +64,10 @@ npm start                # 既定ポート 8010
 ### 3. プラグイン
 ```bash
 cd src/msal-plugin
-mvn package              # target/MSALPlugin-1.0.0.jar
+mvn package              # target/msal-plugin-<version>.jar
 ```
+CI（`.github/workflows/build-plugin.yml`）がビルドして Reposilite に公開します。`pom.xml` の `version` が `-SNAPSHOT` なら全ブランチが `/snapshots/msal-plugin/<ブランチ>/<version>/` へ、`-SNAPSHOT` を外して main に push すると `/releases/msal-plugin/<version>/` へ公開されます（リポジトリの Secrets に `REPOSILITE_USER` / `REPOSILITE_TOKEN` が必要。無ければ公開だけスキップ）。
+
 jar を Paper の `plugins/` に置いて一度起動し、生成された `plugins/MSALPlugin/config.yml` を編集（`redis.*`, `backend.base-url`, `backend.login-url`, **`backend.api-key`**＝`PLUGIN_API_KEY` と同じ値）。`api-key` が空だとプラグインは無効化されます。
 
 | コマンド | 権限（既定） | 説明 |

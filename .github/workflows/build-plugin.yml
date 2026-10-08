@@ -1,0 +1,142 @@
+name: Build plugin
+
+# 公開先は src/msal-plugin/pom.xml の version が -SNAPSHOT かどうかだけで決まる (タグは使わない)
+#   -SNAPSHOT のバージョン (全ブランチ)
+#     -> /snapshots/msal-plugin/<ブランチ名>/<バージョン>/
+#   -SNAPSHOT でないバージョン (main だけ)
+#     -> /releases/msal-plugin/<バージョン>/  (msal-plugin-<バージョン>.jar と msal-plugin-latest.jar)
+#   リリースするには、version から -SNAPSHOT を外して main に push する。
+#   同じファイル名が既にあれば、上書きする (Reposilite は上書きを 409 で拒否するので、削除してから置き直す)。
+#   プラグイン (src/msal-plugin) を変更したときだけ動く。
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "src/msal-plugin/**"
+      - ".github/workflows/build-plugin.yml"
+  pull_request:
+    paths:
+      - "src/msal-plugin/**"
+      - ".github/workflows/build-plugin.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: src/msal-plugin/pom.xml
+
+      - name: Build
+        working-directory: src/msal-plugin
+        run: mvn -B -ntp package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MSALPlugin
+          # shade が元の jar を original-*.jar にリネームするので、msal-plugin-*.jar だけが対象になる
+          path: src/msal-plugin/target/msal-plugin-*.jar
+          if-no-files-found: error
+
+  publish:
+    # 既存プラグイン (MinecraftKaguya など) と同じ配置・同じ判定で Reposilite に PUT する
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      REPO_USER: ${{ secrets.REPOSILITE_USER }}
+      REPO_TOKEN: ${{ secrets.REPOSILITE_TOKEN }}
+      REPO_BASE_URL: https://reposilite.clusters-prj.com
+      ARTIFACT_ID: msal-plugin
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MSALPlugin
+          path: dist
+
+      - name: Deploy to Reposilite
+        if: env.REPO_TOKEN != ''
+        run: |
+          set -euo pipefail
+
+          # HTTP ステータスコードだけを返す (接続できない場合は 000)
+          http_code() { curl -s -o /dev/null -w '%{http_code}' -u "$REPO_USER:$REPO_TOKEN" "$@"; }
+
+          # put_replace <ローカルファイル> <URL>
+          #   PUT する。同名のファイルが既にあって 409 になったら、削除してから置き直す (上書き)
+          put_replace() {
+            local code del
+            code=$(http_code -X PUT "$2" --upload-file "$1")
+            if [ "$code" = "409" ]; then
+              del=$(http_code -X DELETE "$2")
+              case "$del" in
+                2??|404) ;;
+                *) echo "::error::上書きのための削除に失敗しました: DELETE $2 (HTTP $del)"; return 1 ;;
+              esac
+              code=$(http_code -X PUT "$2" --upload-file "$1")
+            fi
+            case "$code" in
+              2??) return 0 ;;
+            esac
+            echo "::error::アップロードに失敗しました: PUT $2 (HTTP $code)"
+            return 1
+          }
+
+          # ビルドした jar からバージョンを取り出す (msal-plugin-<version>.jar)
+          JAR=$(ls dist/${ARTIFACT_ID}-*.jar | head -n 1)
+          test -f "$JAR" || { echo "::error::jar が見つかりません"; ls -l dist; exit 1; }
+          VERSION=$(basename "$JAR" .jar)
+          VERSION="${VERSION#${ARTIFACT_ID}-}"
+
+          if [[ "$VERSION" == *-SNAPSHOT ]]; then
+            # ---- スナップショット: 全ブランチ ----
+            # ブランチ名をパスに使える形にする (/ は - に、それ以外の記号は _ に)
+            SAFE_BRANCH=$(printf '%s' "$GITHUB_REF_NAME" | sed -E 's#/#-#g; s#[^A-Za-z0-9._-]#_#g')
+            if printf '%s' "$GITHUB_REF_NAME" | grep -q '[^A-Za-z0-9._/-]'; then
+              # 日本語や記号を _ に置換すると、別のブランチ同士が同じパスになるため、元の名前のハッシュを付ける
+              SAFE_BRANCH="${SAFE_BRANCH}-$(printf '%s' "$GITHUB_REF_NAME" | sha1sum | cut -c1-6)"
+            fi
+            BASE="$REPO_BASE_URL/snapshots/$ARTIFACT_ID/$SAFE_BRANCH/$VERSION"
+            LATEST="$BASE/${ARTIFACT_ID}-${VERSION}-latest.jar"
+
+            echo "Uploading $JAR to $BASE/${ARTIFACT_ID}-${VERSION}-b${GITHUB_RUN_NUMBER}.jar"
+            put_replace "$JAR" "$BASE/${ARTIFACT_ID}-${VERSION}-b${GITHUB_RUN_NUMBER}.jar"
+            put_replace "$JAR" "$LATEST"
+
+            # 反映されたことを確認する
+            code=$(http_code "$LATEST")
+            [ "$code" = "200" ] || { echo "::error::アップロード後に $LATEST を取得できません (HTTP $code)"; exit 1; }
+            echo "Deployed: $LATEST"
+
+          elif [[ "$VERSION" != *SNAPSHOT* ]]; then
+            # ---- リリース: -SNAPSHOT でないバージョン。main だけ ----
+            if [ "$GITHUB_REF_NAME" != "main" ]; then
+              echo "::notice::バージョン $VERSION は -SNAPSHOT ではありませんが、main 以外のブランチ ($GITHUB_REF_NAME) のためリリースしません"
+              exit 0
+            fi
+            BASE="$REPO_BASE_URL/releases/$ARTIFACT_ID/$VERSION"
+            URL="$BASE/${ARTIFACT_ID}-${VERSION}.jar"
+            LATEST="$BASE/${ARTIFACT_ID}-latest.jar"   # このバージョンのフォルダ内の固定名
+            echo "Releasing $JAR to $URL"
+            # 同じバージョンが既にあれば上書きする
+            put_replace "$JAR" "$URL"
+            put_replace "$JAR" "$LATEST"
+            echo "Released: $URL (latest: $LATEST)"
+
+          else
+            echo "::error::想定外のバージョン形式です: $VERSION"
+            exit 1
+          fi
+
+      - name: Skip (secrets not set)
+        if: env.REPO_TOKEN == ''
+        run: echo "::warning::REPOSILITE_USER / REPOSILITE_TOKEN が未設定のため公開をスキップしました"

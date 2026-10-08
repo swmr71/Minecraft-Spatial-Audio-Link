@@ -6,7 +6,7 @@
 
     <groupId>com.clustersprj</groupId>
     <artifactId>MSALPlugin</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>MSALPlugin</name>
@@ -52,6 +52,8 @@
     </dependencies>
 
     <build>
+        <!-- CI の公開処理は jar 名 <artifactId>-<version>.jar からバージョンを取り出す -->
+        <finalName>msal-plugin-${project.version}</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -71,6 +73,12 @@
                         </goals>
                         <configuration>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <artifactSet>
+                                <excludes>
+                                    <!-- slf4j は Paper 同梱のものを使う（Jedis のログ出力先） -->
+                                    <exclude>org.slf4j:slf4j-api</exclude>
+                                </excludes>
+                            </artifactSet>
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
@@ -86,6 +94,10 @@
                                 <relocation>
                                     <pattern>redis.clients.jedis</pattern>
                                     <shadedPattern>com.clustersprj.msal.libs.jedis</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.json</pattern>
+                                    <shadedPattern>com.clustersprj.msal.libs.json</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>org.apache.commons.pool2</pattern>
