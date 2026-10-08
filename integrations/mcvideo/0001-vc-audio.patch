@@ -1,0 +1,548 @@
+diff --git a/README.md b/README.md
+index 6bc5983..f838c8c 100644
+--- a/README.md
++++ b/README.md
+@@ -26,8 +26,25 @@ gradle build
+ 
+ 権限は `videomap.admin`(デフォルト OP)。
+ 
++## 音声(VC連携)
++映像と一緒に、動画の音を [Minecraft-Spatial-Audio-Link](https://github.com/swmr71/Minecraft-Spatial-Audio-Link) のボイスチャットで流せる。
++スクリーンの位置が音の発生源になり、VC に繋いでいるプレイヤーが近づくと聞こえる(HRTF で方向も分かる)。
++
++`config.yml` の `vc-audio` を設定:
++```yaml
++vc-audio:
++  enabled: true
++  base-url: "http://10.2.1.5:8010"   # msal-node
++  api-key: "<msal-node の PLUGIN_API_KEY>"
++  range: 32
++```
++- 音声の無い動画/配信は自動で映像のみになる
++- 既存のスクリーンは位置が保存されていないので、額縁がロード済みなら自動で求める。出ない場合は作り直す
++- 音が少し遅れるので映像側を `video-delay-ms` だけ遅らせてズレを抑えている(環境に合わせて調整)
++- RTMP 待ち受け(`live <名前> <キー>`)で配信に音声が無い場合、最初の接続は映像のみへ切り替わる際に切れる。OBS が自動再接続する
++
+ ## 補足
+-- 音声は出ない(マップは映像のみ)。音は別途、リソースパックや外部配信で。
++- マップは映像のみ。音は上の VC 連携か、リソースパックなど別途。
+ - 帯域節約のため既定は 10fps。マップ枚数 x fps がそのまま通信量になるので、大きい画面ほど fps を下げるのがおすすめ。
+ - 色はマップのパレット(約240色)に量子化されるので、実写はやや油絵っぽくなる。
+ - OBS 配信はルーター二重構成の都合上、LAN内(tplink側)から繋ぐのが簡単。
+diff --git a/src/main/java/com/clustersprj/videomap/FramePlayer.java b/src/main/java/com/clustersprj/videomap/FramePlayer.java
+index 43c4426..13537d3 100644
+--- a/src/main/java/com/clustersprj/videomap/FramePlayer.java
++++ b/src/main/java/com/clustersprj/videomap/FramePlayer.java
+@@ -6,6 +6,9 @@ import java.io.InputStream;
+ import java.io.InputStreamReader;
+ import java.nio.charset.StandardCharsets;
+ import java.util.List;
++import java.util.concurrent.Executors;
++import java.util.concurrent.ScheduledExecutorService;
++import java.util.concurrent.TimeUnit;
+ import java.util.logging.Level;
+ 
+ /** ffmpeg を起動して rawvideo(rgb24) を読み取り、スクリーンへ流し込むスレッド。 */
+@@ -13,18 +16,38 @@ final class FramePlayer implements Runnable {
+ 
+     private final VideoMapPlugin plugin;
+     private final Screen screen;
+-    private final List<String> command;
++    private volatile List<String> command;
++    /** 音声出力を付けた command が音声なしの入力で失敗したときに使う、映像のみの command。無ければ null。 */
++    private final List<String> fallback;
+     private final boolean reconnect;
++    /** 音声(VC)に合わせて映像の表示を遅らせる量(ms)。0 なら即時。 */
++    private final ScheduledExecutorService delayer;
++    private final int videoDelayMs;
+ 
+     private volatile boolean stopped;
++    private volatile boolean noAudioStream;
+     private volatile Process process;
+     private Thread thread;
+ 
+     FramePlayer(VideoMapPlugin plugin, Screen screen, List<String> command, boolean reconnect) {
++        this(plugin, screen, command, null, reconnect, 0);
++    }
++
++    FramePlayer(VideoMapPlugin plugin, Screen screen, List<String> command, List<String> fallback,
++                boolean reconnect, int videoDelayMs) {
+         this.plugin = plugin;
+         this.screen = screen;
+         this.command = command;
++        this.fallback = fallback;
+         this.reconnect = reconnect;
++        this.videoDelayMs = videoDelayMs;
++        this.delayer = videoDelayMs > 0
++                ? Executors.newSingleThreadScheduledExecutor(r -> {
++                    Thread t = new Thread(r, "VideoMap-delay-" + screen.name);
++                    t.setDaemon(true);
++                    return t;
++                })
++                : null;
+     }
+ 
+     void start() {
+@@ -37,6 +60,7 @@ final class FramePlayer implements Runnable {
+         stopped = true;
+         Process p = process;
+         if (p != null) p.destroy();
++        if (delayer != null) delayer.shutdownNow();
+         if (thread != null) thread.interrupt();
+     }
+ 
+@@ -48,7 +72,7 @@ final class FramePlayer implements Runnable {
+         try {
+             while (!stopped) {
+                 try {
+-                    runOnce(raw, width, height);
++                    if (runOnce(raw, width, height)) continue; // 映像のみで即やり直し
+                 } catch (IOException e) {
+                     if (!stopped) {
+                         plugin.getLogger().log(Level.WARNING, "[" + screen.name + "] ffmpeg error: " + e.getMessage());
+@@ -62,11 +86,13 @@ final class FramePlayer implements Runnable {
+         } finally {
+             Process p = process;
+             if (p != null) p.destroy();
+-            screen.playerFinished(this);
++            if (delayer != null) delayer.shutdownNow();
++            if (screen.playerFinished(this)) plugin.onPlayerFinished(screen);
+         }
+     }
+ 
+-    private void runOnce(byte[] raw, int width, int height) throws IOException {
++    /** @return 音声なしの入力だったため映像のみの command に切り替えた(=すぐやり直すべき)なら true */
++    private boolean runOnce(byte[] raw, int width, int height) throws IOException {
+         ProcessBuilder pb = new ProcessBuilder(command);
+         Process p = pb.start();
+         process = p;
+@@ -75,19 +101,37 @@ final class FramePlayer implements Runnable {
+         err.setDaemon(true);
+         err.start();
+ 
++        boolean gotFrame = false;
+         try (InputStream in = p.getInputStream()) {
+             while (!stopped && readFully(in, raw)) {
++                gotFrame = true;
+                 convertAndPublish(raw, width, height);
+             }
+         } finally {
+             p.destroy();
+         }
++
++        // 音声ストリームの無い入力に音声出力を付けると ffmpeg は起動時に失敗する。映像のみに切り替える。
++        try {
++            err.join(500);
++        } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++        }
++        if (!gotFrame && !stopped && fallback != null && noAudioStream && command != fallback) {
++            plugin.getLogger().info("[" + screen.name + "] 音声ストリームが無いので映像のみで再生します");
++            command = fallback;
++            noAudioStream = false;
++            plugin.onAudioUnavailable(screen);
++            return true;
++        }
++        return false;
+     }
+ 
+     private void drainStderr(Process p) {
+         try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getErrorStream(), StandardCharsets.UTF_8))) {
+             String line;
+             while ((line = r.readLine()) != null) {
++                if (line.contains("does not contain any stream")) noAudioStream = true;
+                 if (!stopped) plugin.getLogger().info("[ffmpeg:" + screen.name + "] " + line);
+             }
+         } catch (IOException ignored) {
+@@ -122,6 +166,18 @@ final class FramePlayer implements Runnable {
+                 tiles[rowTile + (x >> 7)][ty + (x & 127)] = lut[((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)];
+             }
+         }
+-        if (!stopped) screen.publish(tiles);
++        if (stopped) return;
++        if (delayer == null) {
++            screen.publish(tiles);
++        } else {
++            // 音声は VC 経由で少し遅れて届くので、映像も同じだけ遅らせて口の動きとのズレを抑える
++            try {
++                delayer.schedule(() -> {
++                    if (!stopped) screen.publish(tiles);
++                }, videoDelayMs, TimeUnit.MILLISECONDS);
++            } catch (java.util.concurrent.RejectedExecutionException ignored) {
++                // 停止処理中
++            }
++        }
+     }
+ }
+diff --git a/src/main/java/com/clustersprj/videomap/Screen.java b/src/main/java/com/clustersprj/videomap/Screen.java
+index 0dac6a1..5a940f1 100644
+--- a/src/main/java/com/clustersprj/videomap/Screen.java
++++ b/src/main/java/com/clustersprj/videomap/Screen.java
+@@ -4,6 +4,7 @@ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.List;
+ import java.util.UUID;
++import java.util.concurrent.atomic.AtomicInteger;
+ 
+ /** 1つの映像スクリーン(マップ w x h 枚)。 */
+ final class Screen {
+@@ -15,6 +16,13 @@ final class Screen {
+     final List<Integer> mapIds = new ArrayList<>();
+     final List<UUID> frameIds = new ArrayList<>();
+ 
++    /** 画面の中心座標(音の発生位置)。作成時に保存する。古い screens.yml には無い。 */
++    volatile double cx, cy, cz;
++    volatile boolean centerKnown;
++
++    /** 再生要求の世代。非同期の音源作成中に stop / 再 play されたら古い要求を捨てるために使う。 */
++    final AtomicInteger seq = new AtomicInteger();
++
+     /** 最新フレーム。tiles[row * w + col] が 128x128 のマップカラー配列。 */
+     volatile byte[][] frame;
+     volatile int version;
+@@ -47,6 +55,7 @@ final class Screen {
+ 
+     /** 再生を止めて画面を黒にする。 */
+     synchronized void stop() {
++        seq.incrementAndGet();
+         stopPlayerQuietly();
+         fillBlack();
+     }
+@@ -58,12 +67,14 @@ final class Screen {
+         }
+     }
+ 
+-    /** 再生スレッドが自然終了したときに呼ばれる。 */
+-    synchronized void playerFinished(FramePlayer p) {
++    /** 再生スレッドが終了したときに呼ばれる。現在のプレイヤーだったら true（置き換えで止められた古い方は false）。 */
++    synchronized boolean playerFinished(FramePlayer p) {
+         if (player == p) {
+             player = null;
+             fillBlack();
++            return true;
+         }
++        return false;
+     }
+ 
+     synchronized boolean isPlaying() {
+diff --git a/src/main/java/com/clustersprj/videomap/VcAudio.java b/src/main/java/com/clustersprj/videomap/VcAudio.java
+new file mode 100644
+index 0000000..6f8e8c4
+--- /dev/null
++++ b/src/main/java/com/clustersprj/videomap/VcAudio.java
+@@ -0,0 +1,112 @@
++package com.clustersprj.videomap;
++
++import java.net.URI;
++import java.net.http.HttpClient;
++import java.net.http.HttpRequest;
++import java.net.http.HttpResponse;
++import java.time.Duration;
++import java.util.List;
++import java.util.concurrent.CompletableFuture;
++
++/**
++ * 動画の音声を msal-node（Minecraft-Spatial-Audio-Link）のボイスチャット側で流すためのクライアント。
++ * スクリーンの位置に「音源」を作り、ffmpeg が音声を PCM で push する。近づくと聞こえ、離れると聞こえなくなる。
++ */
++final class VcAudio {
++
++    private final VideoMapPlugin plugin;
++    // HTTP/1.1 固定。既定の HTTP/2 は cleartext で h2c アップグレードを試み、msal-node に拒否される。
++    private final HttpClient http = HttpClient.newBuilder()
++            .version(HttpClient.Version.HTTP_1_1)
++            .connectTimeout(Duration.ofSeconds(3))
++            .build();
++
++    VcAudio(VideoMapPlugin plugin) {
++        this.plugin = plugin;
++    }
++
++    private String baseUrl() {
++        String url = plugin.getConfig().getString("vc-audio.base-url", "http://127.0.0.1:8010");
++        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
++    }
++
++    private String apiKey() {
++        return plugin.getConfig().getString("vc-audio.api-key", "");
++    }
++
++    boolean enabled() {
++        return plugin.getConfig().getBoolean("vc-audio.enabled", false) && !apiKey().isBlank();
++    }
++
++    /** 映像のクライアント側表示を音声に合わせて遅らせる量(ms)。 */
++    int videoDelayMs() {
++        return Math.max(0, Math.min(3000, plugin.getConfig().getInt("vc-audio.video-delay-ms", 400)));
++    }
++
++    /** スクリーン名は英数字・_・- のみなのでそのまま音源 ID にできる。 */
++    static String audioId(String screenName) {
++        return "videomap-" + screenName;
++    }
++
++    /** ffmpeg の追加出力: 音声だけをモノラル 48kHz の s16le で msal-node へ HTTP チャンク POST する。 */
++    List<String> outputArgs(String screenName) {
++        return List.of(
++                "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le",
++                "-headers", "X-MSAL-Key: " + apiKey() + "\r\n",
++                "-method", "POST", "-chunked_post", "1",
++                baseUrl() + "/api/vc/plugin/audio/" + audioId(screenName) + "/push");
++    }
++
++    /** 音源を作る（置き換え可）。push の前に完了している必要がある。 */
++    CompletableFuture<Boolean> start(String screenName, String world, double x, double y, double z) {
++        double range = plugin.getConfig().getDouble("vc-audio.range", 32);
++        double volume = plugin.getConfig().getDouble("vc-audio.volume", 1.0);
++        String body = "{\"id\":" + json(audioId(screenName))
++                + ",\"world\":" + json(world)
++                + ",\"x\":" + x + ",\"y\":" + y + ",\"z\":" + z
++                + ",\"range\":" + range + ",\"volume\":" + volume + "}";
++        return post("/api/vc/plugin/audio/start", body);
++    }
++
++    /** 音源を撤去する（失敗しても msal 側が一定時間で自動撤去する）。 */
++    void stop(String screenName) {
++        if (!enabled()) return;
++        post("/api/vc/plugin/audio/stop", "{\"id\":" + json(audioId(screenName)) + "}");
++    }
++
++    private CompletableFuture<Boolean> post(String path, String json) {
++        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl() + path))
++                .timeout(Duration.ofSeconds(8))
++                .header("Content-Type", "application/json; charset=utf-8")
++                .header("X-MSAL-Key", apiKey())
++                .POST(HttpRequest.BodyPublishers.ofString(json))
++                .build();
++        return http.sendAsync(request, HttpResponse.BodyHandlers.ofString())
++                .handle((response, error) -> {
++                    if (error != null) {
++                        plugin.getLogger().warning("[vc-audio] " + path + " に接続できません: " + error.getMessage());
++                        return false;
++                    }
++                    if (response.statusCode() / 100 != 2) {
++                        plugin.getLogger().warning("[vc-audio] " + path + " が HTTP " + response.statusCode() + " を返しました: " + response.body());
++                        return false;
++                    }
++                    return true;
++                });
++    }
++
++    private static String json(String s) {
++        StringBuilder sb = new StringBuilder("\"");
++        for (char c : s.toCharArray()) {
++            switch (c) {
++                case '"' -> sb.append("\\\"");
++                case '\\' -> sb.append("\\\\");
++                default -> {
++                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
++                    else sb.append(c);
++                }
++            }
++        }
++        return sb.append('"').toString();
++    }
++}
+diff --git a/src/main/java/com/clustersprj/videomap/VideoMapPlugin.java b/src/main/java/com/clustersprj/videomap/VideoMapPlugin.java
+index 5a92176..77de240 100644
+--- a/src/main/java/com/clustersprj/videomap/VideoMapPlugin.java
++++ b/src/main/java/com/clustersprj/videomap/VideoMapPlugin.java
+@@ -40,6 +40,7 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+     private static final List<String> SUBCOMMANDS = List.of("create", "remove", "play", "live", "stop", "list");
+ 
+     private final Map<String, Screen> screens = new TreeMap<>();
++    private VcAudio vcAudio;
+     private File screensFile;
+     private File videosDir;
+ 
+@@ -51,6 +52,7 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+         if (!videosDir.exists() && !videosDir.mkdirs()) {
+             getLogger().warning("videos フォルダを作成できませんでした");
+         }
++        vcAudio = new VcAudio(this);
+         loadScreens();
+ 
+         var cmd = getCommand("videomap");
+@@ -64,10 +66,45 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+     @Override
+     public void onDisable() {
+         for (Screen s : screens.values()) {
+-            s.stop();
++            stopScreen(s);
+         }
+     }
+ 
++    // ------------------------------------------------------------ 音声(VC連携)
++
++    /** 再生を止め、VC 側の音源も撤去する。 */
++    private void stopScreen(Screen screen) {
++        screen.stop();
++        vcAudio.stop(screen.name);
++    }
++
++    /** 再生スレッドが自然終了したとき(FramePlayer から)。VC の音源を撤去する。 */
++    void onPlayerFinished(Screen screen) {
++        vcAudio.stop(screen.name);
++    }
++
++    /** 入力に音声が無く映像のみに切り替えたとき(FramePlayer から)。VC の音源を撤去する。 */
++    void onAudioUnavailable(Screen screen) {
++        vcAudio.stop(screen.name);
++    }
++
++    /** 音が出る位置 = スクリーンの中心。保存が無い古いスクリーンは、ロード済みの額縁から求める。 */
++    private double[] screenCenter(Screen screen) {
++        if (screen.centerKnown) return new double[]{screen.cx, screen.cy, screen.cz};
++        double sx = 0, sy = 0, sz = 0;
++        int n = 0;
++        for (UUID id : screen.frameIds) {
++            Entity e = Bukkit.getEntity(id);
++            if (e == null) continue;
++            sx += e.getLocation().getX();
++            sy += e.getLocation().getY();
++            sz += e.getLocation().getZ();
++            n++;
++        }
++        if (n == 0) return null;
++        return new double[]{sx / n, sy / n, sz / n};
++    }
++
+     // ------------------------------------------------------------ 永続化
+ 
+     private void loadScreens() {
+@@ -79,6 +116,13 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+             if (sec == null) continue;
+             Screen screen = new Screen(name, sec.getString("world", ""), sec.getInt("w"), sec.getInt("h"));
+             screen.mapIds.addAll(sec.getIntegerList("maps"));
++            List<Double> center = sec.getDoubleList("center");
++            if (center.size() == 3) {
++                screen.cx = center.get(0);
++                screen.cy = center.get(1);
++                screen.cz = center.get(2);
++                screen.centerKnown = true;
++            }
+             for (String id : sec.getStringList("frames")) {
+                 try {
+                     screen.frameIds.add(UUID.fromString(id));
+@@ -103,6 +147,7 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+             yml.set(s.name + ".w", s.w);
+             yml.set(s.name + ".h", s.h);
+             yml.set(s.name + ".maps", s.mapIds);
++            if (s.centerKnown) yml.set(s.name + ".center", List.of(s.cx, s.cy, s.cz));
+             List<String> frames = new ArrayList<>();
+             for (UUID id : s.frameIds) frames.add(id.toString());
+             yml.set(s.name + ".frames", frames);
+@@ -256,6 +301,20 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+                 screen.frameIds.add(frame.getUniqueId());
+             }
+         }
++        // 音の発生位置(画面中心)。ブロックの中心を平均する
++        double sx = 0, sy = 0, sz = 0;
++        for (Block[] row : spots) {
++            for (Block b : row) {
++                sx += b.getX() + 0.5;
++                sy += b.getY() + 0.5;
++                sz += b.getZ() + 0.5;
++            }
++        }
++        screen.cx = sx / (w * h);
++        screen.cy = sy / (w * h);
++        screen.cz = sz / (w * h);
++        screen.centerKnown = true;
++
+         screen.fillBlack();
+         screens.put(name, screen);
+         saveScreens();
+@@ -265,7 +324,7 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+     private void cmdRemove(CommandSender sender, String[] args) {
+         Screen screen = requireScreen(sender, args);
+         if (screen == null) return;
+-        screen.stop();
++        stopScreen(screen);
+         for (UUID id : screen.frameIds) {
+             Entity e = Bukkit.getEntity(id);
+             if (e != null) e.remove();
+@@ -278,7 +337,7 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+     private void cmdStop(CommandSender sender, String[] args) {
+         Screen screen = requireScreen(sender, args);
+         if (screen == null) return;
+-        screen.stop();
++        stopScreen(screen);
+         msg(sender, NamedTextColor.GREEN, "「" + screen.name + "」を停止したよ");
+     }
+ 
+@@ -311,7 +370,7 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+             return;
+         }
+         boolean reconnect = live && getConfig().getBoolean("live.reconnect", true);
+-        screen.startPlayer(new FramePlayer(this, screen, cmd, reconnect));
++        startPlayback(sender, screen, cmd, reconnect);
+ 
+         if (live && !args[2].contains("://")) {
+             int port = getConfig().getInt("live.listen-port", 1935);
+@@ -321,6 +380,42 @@ public final class VideoMapPlugin extends JavaPlugin implements TabExecutor {
+         }
+     }
+ 
++    /**
++     * 再生を開始する。vc-audio が有効なら、先に VC 側の音源を作ってから(push が 404 にならないよう)
++     * 音声出力付きの ffmpeg を起動する。音源を作れなければ映像のみで再生する。
++     */
++    private void startPlayback(CommandSender sender, Screen screen, List<String> videoOnly, boolean reconnect) {
++        double[] center = vcAudio.enabled() ? screenCenter(screen) : null;
++        if (center == null) {
++            if (vcAudio.enabled()) {
++                msg(sender, NamedTextColor.YELLOW, "スクリーンの位置が分からないので音声なしで再生するよ(作り直すと音が出るよ)");
++            }
++            screen.seq.incrementAndGet();
++            screen.startPlayer(new FramePlayer(this, screen, videoOnly, reconnect));
++            return;
++        }
++
++        int seq = screen.seq.incrementAndGet();
++        List<String> withAudio = new ArrayList<>(videoOnly);
++        withAudio.addAll(vcAudio.outputArgs(screen.name));
++        int delay = vcAudio.videoDelayMs();
++
++        vcAudio.start(screen.name, screen.worldName, center[0], center[1], center[2]).thenAccept(ok ->
++                Bukkit.getScheduler().runTask(this, () -> {
++                    if (screen.seq.get() != seq) {
++                        // 音源作成中に stop / 再 play された
++                        if (ok) vcAudio.stop(screen.name);
++                        return;
++                    }
++                    if (ok) {
++                        screen.startPlayer(new FramePlayer(this, screen, withAudio, videoOnly, reconnect, delay));
++                    } else {
++                        msg(sender, NamedTextColor.YELLOW, "VC に音声を流せなかったので映像のみで再生するよ(コンソールを確認してね)");
++                        screen.startPlayer(new FramePlayer(this, screen, videoOnly, reconnect));
++                    }
++                }));
++    }
++
+     private Screen requireScreen(CommandSender sender, String[] args) {
+         if (args.length < 2) {
+             msg(sender, NamedTextColor.RED, "スクリーン名を指定してね");
+diff --git a/src/main/resources/config.yml b/src/main/resources/config.yml
+index 0d6e233..7655dc1 100644
+--- a/src/main/resources/config.yml
++++ b/src/main/resources/config.yml
+@@ -19,3 +19,18 @@ live:
+   listen-port: 1935
+   # 配信が切れたら自動で待ち受けに戻る(OBSの再接続用)
+   reconnect: true
++
++# 音声を Minecraft-Spatial-Audio-Link(msal-node) のボイスチャットで流す
++# スクリーンの位置に「音源」ができ、VC に接続しているプレイヤーが近づくと聞こえる
++vc-audio:
++  enabled: false
++  # msal-node のベースURL(プラグインから届く内部アドレス)
++  base-url: "http://127.0.0.1:8010"
++  # msal-node の .env の PLUGIN_API_KEY と同じ値(必須。空だと無効)
++  api-key: ""
++  # スクリーン中心から何ブロックまで聞こえるか(1〜128)
++  range: 32
++  # 音量(0.0〜1.0)
++  volume: 1.0
++  # VC 経由の音声は少し遅れて届くので、映像の表示を遅らせて合わせる(ms)。ズレが気になったら調整
++  video-delay-ms: 400

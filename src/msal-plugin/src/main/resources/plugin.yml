@@ -8,7 +8,19 @@ description: Minecraft Spatial Audio Link - 座標収集とVC連携プラグイ�
 commands:
   vc:
     description: ボイスチャットへの接続・管理コマンド
-    usage: /vc <join|broadcast>
+    usage: /vc <join|broadcast|mute|unmute>
   radio:
     description: 無線チャンネルを切り替える
     usage: /radio <channel>
+
+permissions:
+  msal.use:
+    description: /vc join と /radio を使用できる
+    default: true
+  msal.broadcast:
+    description: /vc broadcast を実行できる（Moderator 以上）。LuckPerms のグループに付与する
+    default: op
+  msal.mute.*:
+    description: すべてのラジオチャンネルを /vc mute|unmute できる
+    default: op
+  # msal.mute.<channel> を個別に付与すると、その「担当チャンネル」だけ操作できる

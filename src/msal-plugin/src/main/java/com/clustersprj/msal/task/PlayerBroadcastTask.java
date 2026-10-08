@@ -15,9 +15,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 全プレイヤーの座標・向き・状態を収集し、Redis へ非同期publishする。
- * Bukkit API へのアクセスはメインスレッド（run）で行い、
- * Redis への書き込みだけを非同期スレッドへ逃がす。
+ * 全プレイヤーの座標・向き・状態を収集し、Redis へ送信する。
+ * <p>
+ * {@link #run()} は<b>メインスレッド</b>で実行すること（{@code runTaskTimer}）。
+ * Bukkit API へのアクセスはここで完結させ、Redis への書き込みだけを非同期スレッドへ逃がす。
+ * JSON スキーマは 仕様/詳細設計/Redis・API設計.md を参照。
  */
 public class PlayerBroadcastTask extends BukkitRunnable {
 
@@ -33,34 +35,27 @@ public class PlayerBroadcastTask extends BukkitRunnable {
 
     @Override
     public void run() {
-        // メインスレッド: Bukkit API から安全にスナップショットを取る
-        List<PlayerSnapshot> snapshots = new ArrayList<>();
+        List<String[]> entries = new ArrayList<>();
+        long now = System.currentTimeMillis();
+
         for (Player player : Bukkit.getOnlinePlayers()) {
             Location loc = player.getLocation();
-            snapshots.add(new PlayerSnapshot(
-                    player.getUniqueId().toString(),
-                    player.getName(),
-                    loc.getX(), loc.getY(), loc.getZ(),
-                    loc.getYaw(),
-                    plugin.getRadioChannel(player.getUniqueId()),
-                    player.isSneaking(),
-                    player.isInWater()
-            ));
+            int channel = plugin.getRadioChannel(player.getUniqueId());
+            String uuid = player.getUniqueId().toString();
+            entries.add(new String[]{uuid, toJson(uuid, player, loc, channel, now)});
         }
 
-        if (snapshots.isEmpty()) {
+        if (entries.isEmpty()) {
             return;
         }
-
-        // 非同期スレッド: Redis への書き込み
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> publish(snapshots));
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> publish(entries));
     }
 
-    private void publish(List<PlayerSnapshot> snapshots) {
+    private void publish(List<String[]> entries) {
         try (Jedis jedis = jedisPool.getResource()) {
             Pipeline pipeline = jedis.pipelined();
-            for (PlayerSnapshot snapshot : snapshots) {
-                pipeline.setex("vchat:player:" + snapshot.uuid(), ttlSeconds, snapshot.toJson());
+            for (String[] entry : entries) {
+                pipeline.setex("vchat:player:" + entry[0], ttlSeconds, entry[1]);
             }
             pipeline.sync();
         } catch (Exception e) {
@@ -68,28 +63,37 @@ public class PlayerBroadcastTask extends BukkitRunnable {
         }
     }
 
-    private record PlayerSnapshot(
-            String uuid, String name,
-            double x, double y, double z,
-            float yaw, int radioChannel,
-            boolean sneaking, boolean inWater
-    ) {
-        String toJson() {
-            JsonObject json = new JsonObject();
-            json.addProperty("u", uuid);
-            json.addProperty("n", name);
+    private static String toJson(String uuid, Player player, Location loc, int channel, long now) {
+        JsonObject json = new JsonObject();
+        json.addProperty("u", uuid);
+        json.addProperty("n", player.getName());
 
-            JsonArray pos = new JsonArray();
-            pos.add(x);
-            pos.add(y);
-            pos.add(z);
-            json.add("p", pos);
+        JsonArray pos = new JsonArray();
+        pos.add(round2(loc.getX()));
+        pos.add(round2(loc.getY()));
+        pos.add(round2(loc.getZ()));
+        json.add("p", pos);
 
-            json.addProperty("y", yaw);
-            json.addProperty("c", radioChannel);
-            json.addProperty("is_sneaking", sneaking);
-            json.addProperty("is_in_water", inWater);
-            return json.toString();
+        json.addProperty("y", normalizeYaw(loc.getYaw()));
+        json.addProperty("w", loc.getWorld() != null ? loc.getWorld().getName() : "");
+        json.addProperty("c", channel);
+        json.addProperty("m", channel != 0 ? "radio" : "spatial");
+        json.addProperty("t", now);
+        json.addProperty("is_sneaking", player.isSneaking());
+        json.addProperty("is_in_water", player.isInWater());
+        return json.toString();
+    }
+
+    private static double round2(double v) {
+        return Math.round(v * 100.0) / 100.0;
+    }
+
+    /** Bukkit の yaw（-180..180 など）を 0.0 - 360.0 に正規化する。 */
+    private static double normalizeYaw(float yaw) {
+        double y = yaw % 360.0;
+        if (y < 0) {
+            y += 360.0;
         }
+        return round2(y);
     }
 }
